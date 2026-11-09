@@ -1,0 +1,7 @@
+assets/
+*.blend
+*.blend1
+renders/
+frames/
+__pycache__/
+.DS_Store

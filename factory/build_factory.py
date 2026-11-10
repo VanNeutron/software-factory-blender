@@ -18,6 +18,7 @@ A = None   # assets module namespace (Poly Haven), set by build_all
 INTERIOR = False   # True when interior.py (robots, animated line) is loaded
 ACCENT = (0.33, 0.39, 1.0)      # #9AA8FF in linear-ish
 GREEN = (0.15, 0.62, 0.32)      # #6CCB98 in linear-ish
+GATES = (4.0, 16.0)             # inspection gates, centred on two of the line's rest positions (x = 4 mod 6)
 
 # --------------------------------------------------------------------------
 # scene plumbing
@@ -497,10 +498,16 @@ def setup_render(preview=True):
     scn = bpy.context.scene
     scn.render.engine = 'CYCLES'
     prefs = bpy.context.preferences.addons['cycles'].preferences
-    prefs.compute_device_type = 'METAL'
-    prefs.get_devices()
+    for dev in ('OPTIX', 'CUDA', 'METAL'):          # whichever GPU backend this machine has
+        try:
+            prefs.compute_device_type = dev
+        except TypeError:
+            continue
+        prefs.get_devices()
+        if any(d.type == dev for d in prefs.devices):
+            break
     for d in prefs.devices:
-        d.use = (d.type == 'METAL')
+        d.use = (d.type == prefs.compute_device_type)
     scn.cycles.device = 'GPU'
     scn.cycles.samples = 64 if preview else 512
     scn.cycles.use_denoising = True
@@ -637,7 +644,8 @@ def build_hall(M):
     # front wall (-Y): concrete upstand to 3.4 with the entry gap at the gatehouse (x -12.8..-7.2), glass curtain above
     box("FrontUpstandA", x0, -12.8, y0, y0 + t, F, 3.4, M['concrete'], S)
     box("FrontUpstandB", -7.2, x1, y0, y0 + t, F, 3.4, M['concrete'], S)
-    box("FrontCurtain", x0, x1, y0 + t * 0.4, y0 + t * 0.6, 3.4, WALL, M['glass'], S, 0)
+    box("FrontCurtain", x0, x1, y0 + t * 0.4, y0 + t * 0.6, 3.4, 8.6, M['glass'], S, 0)
+    box("FrontFascia", x0, x1, y0 - 0.14, y0 + t, 8.68, WALL, M['cladding'], S)
     box("EntryGlass", -12.8, -7.2, y0 + t * 0.4, y0 + t * 0.6, F, 3.4, M['glass'], S, 0)
     box("EntryCanopy", -13.6, -6.4, y0 - 2.5, y0, 4.6, 4.9, M['steel'], S)
     for xf in FRAMES:
@@ -645,7 +653,7 @@ def build_hall(M):
             xm = xf + k * 9.05 / 3
             if xm > x1 + 0.01:
                 continue
-            box(f"FrontMullion{xm:.1f}", xm - 0.09, xm + 0.09, y0 - 0.12, y0 + t, 3.4, WALL, M['steel'], S)
+            box(f"FrontMullion{xm:.1f}", xm - 0.09, xm + 0.09, y0 - 0.12, y0 + t, 3.4, 8.68, M['steel'], S)
     for zt in (3.4, 6.4, 8.6):
         box(f"FrontTransom{zt}", x0, x1, y0 - 0.12, y0 + t, zt - 0.08, zt + 0.08, M['steel'], S)
     # end walls with gables
@@ -660,7 +668,13 @@ def build_hall(M):
         else:
             box(name, xa, xb, y0, y1, F, WALL, M['cladding'], S)
         prism(name + "Gable", [(xa, y0, WALL), (xa, y1, WALL), (xa, 0, RIDGE)], (xa, 0, 0), (xb, 0, 0), M['cladding'], S)
-    gable("WallWest", x0)
+    # west wall: conveyor portal (y -2.1..0.1, z 3.1..5.25) where the line comes in from the intake building
+    xa, xb = x0, x0 + t
+    box("WallWestA", xa, xb, y0, -2.1, F, WALL, M['cladding'], S)
+    box("WallWestB", xa, xb, 0.1, y1, F, WALL, M['cladding'], S)
+    box("WallWestLow", xa, xb, -2.1, 0.1, F, 3.1, M['cladding'], S)
+    box("WallWestLintel", xa, xb, -2.1, 0.1, 5.25, WALL, M['cladding'], S)
+    prism("WallWestGable", [(xa, y0, WALL), (xa, y1, WALL), (xa, 0, RIDGE)], (xa, 0, 0), (xb, 0, 0), M['cladding'], S)
     gable("WallEast", x1, opening=(-5.0, 3.0, 8.0))
     # portal frames (columns + rafters) inside
     for i, xf in enumerate(FRAMES):
@@ -697,23 +711,83 @@ def build_hall(M):
             light(f"HallLight{i}_{yy:.0f}", 'AREA', (xc, yy, 9.1), 2600, (1.0, 0.72, 0.45), size=5.0, size_y=0.6)
 
 
+def build_intake(M, S):
+    """Intake building: an enclosed conveyor tunnel on the west end. Cubes ride through it and enter the hall
+    through a high-speed roll-up door in the conveyor portal."""
+    xw, xe, ya, yb, H = -40.6, -29.0, -3.2, 1.2, 6.4
+    box("IntakeFloor", xw, xe, ya, yb, 0, F, M['concrete'], S, 0.04)
+    box("IntakeWallS", xw, xe, ya, ya + 0.25, F, H, M['cladding'], S)
+    box("IntakeWallN", xw, xe, yb - 0.25, yb, F, H, M['cladding'], S)
+    box("IntakeWallW", xw, xw + 0.25, ya, yb, F, H, M['cladding'], S)
+    box("IntakeRoof", xw - 0.3, xe, ya - 0.3, yb + 0.3, H, H + 0.3, M['roof'], S)
+    box("IntakeFascia", xw - 0.35, xe, ya - 0.35, ya - 0.25, H - 0.4, H + 0.35, M['galv'], S)
+    box("IntakeFasciaN", xw - 0.35, xe, yb + 0.25, yb + 0.35, H - 0.4, H + 0.35, M['galv'], S)
+    for xx in (-39.0, -35.0, -31.0):
+        box(f"IntakeColS{xx}", xx - 0.15, xx + 0.15, ya - 0.2, ya, 0, H, M['steel'], S)
+        box(f"IntakeColN{xx}", xx - 0.15, xx + 0.15, yb, yb + 0.2, 0, H, M['steel'], S)
+    # infeed shutter at the far (west) end, closed, with a small personnel door beside the line
+    box("IntakeShutterW", xw - 0.08, xw, ya + 0.5, yb - 0.5, F, 5.0, M['shutter'], S)
+    box("IntakeDoor", xe - 3.4, xe - 2.4, ya - 0.06, ya, F, F + 2.1, M['steel'], S)
+    box("IntakeDoorStep", xe - 3.6, xe - 2.2, ya - 1.0, ya, 0, F - 0.02, M['concrete_dark'], S)
+    # sign: periwinkle "01" tile on the south face (zone 01 of the factory)
+    box("IntakeSignPlate", xe - 6.6, xe - 4.6, ya - 0.32, ya - 0.26, 4.6, 5.5, M['steel'], S)
+    box("IntakeSign", xe - 6.4, xe - 5.6, ya - 0.34, ya - 0.32, 4.75, 5.35, M['accent'], S, 0)
+    # dim service lights inside the tunnel, and a wall lamp outside over the door
+    for k, xx in enumerate((-38.0, -34.0, -30.5)):
+        light(f"IntakeLamp{k}", 'AREA', (xx, -1.0, H - 0.25), 60, (0.85, 0.9, 1.0), size=0.3, size_y=1.2)
+    light("IntakeDoorLamp", 'SPOT', (xe - 2.9, ya - 0.5, F + 2.6), 120, (1.0, 0.72, 0.4), size=0.08,
+          rot=(math.radians(25), 0, 0), spot=math.radians(110))
+    # high-speed roll-up door in the hall portal (inside face of the west wall)
+    return roll_door("Intake", -28.65, +1, M, S)
+
+
+def roll_door(tag, xw, sgn, M, S):
+    """High-speed roll-up door over the conveyor portal (y -2.1..0.1, z 3.1..5.25), mounted on the wall face at
+    x = xw on the side sgn (+1: +x side). Opens at the end of every line cycle; the cube passes on frames ~4-18
+    of the next cycle; closed again by frame 36. An amber beacon flashes while it moves."""
+    def X(a, b):
+        p, q = xw + sgn * a, xw + sgn * b
+        return (min(p, q), max(p, q))
+    box(f"{tag}PortalFrameL", *X(0.0, 0.12), -2.3, -2.1, 3.1, 5.25, M['safety'], S)
+    box(f"{tag}PortalFrameR", *X(0.0, 0.12), 0.1, 0.3, 3.1, 5.25, M['safety'], S)
+    box(f"{tag}DoorDrumHousing", *X(0.0, 0.4), -2.35, 0.35, 5.25, 5.75, M['steel'], S)
+    door = box(f"{tag}RollDoor", *X(0.05, 0.1), -2.12, 0.12, -1.7, 0.0, M['shutter'], S, 0)   # closes onto the rollers
+    door.location = (0, 0, 5.25)
+    bar = box(f"{tag}RollDoorBar", *X(0.04, 0.12), -2.12, 0.12, -0.08, 0.0, M['safety'], S, 0.005)
+    bar.location = (0, 0, 3.63)
+    cyl(f"{tag}DoorBeacon", xw + sgn * 0.22, 0.55, 5.35, 5.6, 0.09, 0.08, M['lamp_warm'], S, 16)
+    bl = light(f"{tag}DoorBeaconLight", 'POINT', (xw + sgn * 0.32, 0.55, 5.5), 0, (1.0, 0.55, 0.08), size=0.05)
+    for n in range(0, 12):
+        c = 1 + n * 96
+        for f, sz in ((c - 10, 1.0), (c + 2, 0.03), (c + 24, 0.03), (c + 36, 1.0)):
+            if f < 1:
+                continue
+            door.scale = (1, 1, sz)
+            door.keyframe_insert('scale', frame=f)
+            bar.location = (0, 0, 5.25 - 1.62 * sz)
+            bar.keyframe_insert('location', frame=f)
+        for f in range(max(1, c - 10), c + 37, 4):
+            bl.data.energy = 25 if ((f - c) // 4) % 2 == 0 else 2
+            bl.data.keyframe_insert('energy', frame=f)
+        bl.data.energy = 0
+        bl.data.keyframe_insert('energy', frame=c + 38)
+    return door
+
+
 def build_line(M):
     S = "ProductionLine"
     # conveyor in the hall and out through the east door to the yard
-    box("ConveyorFrame", -27.5, 33.5, -2.0, 0.0, 2.8, 3.45, M['steel'], S)
+    box("ConveyorFrame", -40.2, 37.5, -2.0, 0.0, 2.8, 3.45, M['steel'], S)
     if not INTERIOR:
         box("ConveyorBelt", -27.5, 33.5, -1.85, -0.15, 3.45, 3.52, M['rubber'], S, 0.005)
-    for k in range(19):
-        x = -27 + k * 3.35
+    for k in range(23):
+        x = -40.0 + k * 3.35
         for yy in (-1.85, -0.15):
-            beam(f"ConvLeg{k}_{yy}", (x, yy, F if x < 26 else 0.8 if x > 33.5 else F), (x, yy, 2.8), 0.15, 0.15, M['steel'], S)
+            beam(f"ConvLeg{k}_{yy}", (x, yy, F if x < 30 else 0.8 if x > 33.5 else 0.0), (x, yy, 2.8), 0.15, 0.15, M['steel'], S)
     # guard rails
     for yy in (-2.05, 0.05):
         beam(f"ConvRail{yy}", (-27.5, yy, 3.7), (33.5, yy, 3.7), 0.08, 0.12, M['safety'], S)
-    # intake hopper outside the west wall
-    box("HopperBase", -34.2, -30.8, -2.7, 0.7, F, 4.0, M['concrete_dark'], S)
-    cyl("Hopper", -32.5, -1.0, 4.0, 7.6, 1.1, 2.4, M['galv'], S)
-    beam("HopperChute", (-31, -1, 4.6), (-27.5, -1, 3.6), 1.0, 0.8, M['galv'], S)
+    build_intake(M, S)
     if not INTERIOR:
         # robot cells
         for i, x in enumerate((-20, -14, -8)):
@@ -752,7 +826,7 @@ def build_line(M):
         box(f"Monitor{k}", xx, xx + 1.4, -9.0, -8.9, F + 1.2, F + 2.0, M['screen'], S, 0)
         box(f"MonitorBack{k}", xx - 0.03, xx + 1.43, -8.9, -8.8, F + 1.17, F + 2.03, M['steel'], S, 0)
     # inspection gates over the line
-    for gx in (4.5, 13.0):
+    for gx in GATES:
         box(f"GatePostA{gx}", gx - 0.3, gx + 0.3, 0.6, 1.2, F, 6.8, M['steel'], S)
         box(f"GatePostB{gx}", gx - 0.3, gx + 0.3, -3.2, -2.6, F, 6.8, M['steel'], S)
         box(f"GateBeam{gx}", gx - 0.4, gx + 0.4, -3.2, 1.2, 6.8, 7.4, M['steel'], S)
@@ -807,13 +881,184 @@ def build_gate_and_school(M):
     light("SchoolBoardGlow", 'AREA', (11.2, -20.7, 2.6), 60, (0.55, 0.62, 1.0), size=6, size_y=2, rot=(math.radians(90), 0, 0))
 
 
+def build_deploy(M, S):
+    """Zone 06 deployment building: the line ends here. Finished packages ride in through a roll-up door,
+    and the status bar over the door flashes green as each one is deployed."""
+    xw, xe, ya, yb, z0, H = 35.0, 50.4, -3.2, 1.2, 0.8, 9.2      # tall enough to show its sign over the server row
+    box("DeployWallS", xw, xe, ya, ya + 0.25, z0, H, M['cladding'], S)
+    box("DeployWallN", xw, xe, yb - 0.25, yb, z0, H, M['cladding'], S)
+    box("DeployWallE", xe - 0.25, xe, ya, yb, z0, H, M['cladding'], S)
+    box("DeployWallWA", xw, xw + 0.25, ya, -2.1, z0, H, M['cladding'], S)
+    box("DeployWallWB", xw, xw + 0.25, 0.1, yb, z0, H, M['cladding'], S)
+    box("DeployWallWLow", xw, xw + 0.25, -2.1, 0.1, z0, 3.1, M['cladding'], S)
+    box("DeployWallWLintel", xw, xw + 0.25, -2.1, 0.1, 5.25, H, M['cladding'], S)
+    box("DeployRoof", xw - 0.3, xe + 0.3, ya - 0.3, yb + 0.3, H, H + 0.3, M['roof'], S)
+    box("DeployFasciaS", xw - 0.35, xe + 0.35, ya - 0.35, ya - 0.25, H - 0.4, H + 0.35, M['galv'], S)
+    for k in range(4):
+        cyl(f"DeployVent{k}", 38.5 + k * 3.4, -1.0, H + 0.3, H + 1.0, 0.45, 0.4, M['galv'], S, 24)
+    roll_door("Deploy", xw, -1, M, S)
+    # status bar over the door: dim green, flashes bright as each package goes in
+    box("DeployStatusBar", xw - 0.12, xw, -2.0, 0.0, 5.95, 6.1, M['steel'], S)
+    box("DeployStatusLed", xw - 0.14, xw - 0.12, -1.95, -0.05, 5.98, 6.07, M['led_green'], S, 0)
+    sl = light("DeployStatusLight", 'AREA', (xw - 0.4, -1.0, 6.02), 2, GREEN, size=1.9, size_y=0.1,
+               rot=(0, math.radians(90), 0))
+    for n in range(0, 12):
+        c = 1 + n * 96
+        for f, e in ((c + 8, 2), (c + 10, 80), (c + 14, 10), (c + 18, 80), (c + 22, 10), (c + 26, 80), (c + 34, 2)):
+            sl.data.energy = e
+            sl.data.keyframe_insert('energy', frame=f)
+    light("DeployInside", 'AREA', (42.0, -1.0, 6.2), 40, GREEN, size=0.4, size_y=6.0)
+    sign_text("DeploySign", "OPERATIONS", (39.9, ya - 0.02, 7.45), 0.85, M, S, halo=GREEN,
+              face=(0.82, 0.83, 0.8), plate=(37.2, 42.6, 7.2, 8.4))
+    ops_board(M, S, 43.6, 49.6, 5.65, 9.0 - 0.05, ya)
+    return True
+
+
+def ops_board(M, S, x0, x1, z0, z1, wall_y):
+    """LED monitoring board on the deployment building: a live pulse trace (the Fig. 1 heartbeat) on top,
+    a row of bar graphs that rise and fall below, on a dark screen in a grimy steel bezel."""
+    import random
+    rnd = random.Random(66)
+    yf = wall_y - 0.22                       # screen face
+    box("OpsBezel", x0 - 0.12, x1 + 0.12, yf, wall_y, z0 - 0.12, z1 + 0.12, M['steel'], S, 0.02)
+    for k, xx in enumerate((x0 + 0.4, x1 - 0.4)):
+        box(f"OpsBracket{k}", xx - 0.06, xx + 0.06, wall_y - 0.06, wall_y, z0 - 0.4, z1 + 0.3, M['steel'], S, 0.005)
+    scr = plain("OpsScreen", (0.004, 0.006, 0.006), 0.0, 0.15)
+    box("OpsScreen", x0, x1, yf - 0.005, yf, z0, z1, scr, S, 0)
+    grid = emit("OpsGrid", (0.08, 0.2, 0.14), 0.6)
+    gy = yf - 0.008
+    for k in range(1, 4):
+        zz = z0 + 0.15 + k * 0.42
+        box(f"OpsGridH{k}", x0 + 0.15, x1 - 0.15, gy - 0.002, gy, zz - 0.006, zz + 0.006, grid, S, 0)
+    bar_g, bar_a = emit("OpsBarGreen", GREEN, 5.0), emit("OpsBarAccent", ACCENT, 5.0)
+    # bar graphs: 20 bars, heights wander smoothly (sum of slow sines + jitter), keyed every 6 frames
+    nb, bw = 20, (x1 - x0 - 0.5) / 20
+    zb, hmax = z0 + 0.15, 1.6
+    for i in range(nb):
+        bx = x0 + 0.25 + i * bw
+        mat = bar_a if i % 5 == 4 else bar_g
+        ob = box(f"OpsBar{i}", bx + bw * 0.15, bx + bw * 0.85, gy - 0.012, gy - 0.004, 0.0, hmax, mat, S, 0)
+        ob.location = (0, 0, zb)
+        ph, f1, f2 = rnd.uniform(0, 6.28), rnd.uniform(0.04, 0.09), rnd.uniform(0.11, 0.2)
+        base = rnd.uniform(0.35, 0.6)
+        for f in range(1, 1060, 6):
+            h = base + 0.22 * math.sin(f * f1 + ph) + 0.12 * math.sin(f * f2 + ph * 1.7) + rnd.uniform(-0.08, 0.08)
+            ob.scale = (1, 1, max(0.06, min(1.0, h)))
+            ob.keyframe_insert('scale', frame=f)
+    # pulse trace: flat - spike - dip - small bump, three beats across the top band
+    zp, amp = z0 + 2.45, 0.4
+    beat = [(0.0, 0), (0.30, 0), (0.36, 0.25), (0.40, 0), (0.46, 0), (0.50, 1.0), (0.54, -0.6), (0.58, 0),
+            (0.70, 0), (0.78, 0.3), (0.86, 0), (1.0, 0)]
+    pts, w = [], (x1 - x0 - 0.4) / 3
+    for b in range(3):
+        for (u, v) in beat:
+            pts.append((x0 + 0.2 + (b + u) * w, zp + v * amp))
+    cu = bpy.data.curves.new("OpsPulse", 'CURVE')
+    cu.dimensions = '3D'
+    cu.bevel_depth = 0.022
+    sp = cu.splines.new('POLY')
+    sp.points.add(len(pts) - 1)
+    for i, (px, pz) in enumerate(pts):
+        sp.points[i].co = (px, gy - 0.02, pz, 1)
+    cu.materials.append(emit("OpsPulseGlow", GREEN, 7.0))
+    link(bpy.data.objects.new("OpsPulse", cu), S)
+    # sweep: a bright head runs along the trace every 2 s, like a monitor redrawing
+    head = cyl("OpsPulseHead", 0, 0, -0.02, 0.02, 0.07, 0.07, emit("OpsPulseHeadGlow", (0.75, 1.0, 0.85), 25), S, 16)
+    head.rotation_euler = (math.radians(90), 0, 0)
+    def at(xq):
+        for (ax, az), (bx_, bz) in zip(pts, pts[1:]):
+            if ax <= xq <= bx_:
+                return az + (bz - az) * (xq - ax) / max(1e-6, bx_ - ax)
+        return zp
+    for f in range(1, 1060, 2):
+        u = ((f - 1) % 48) / 48
+        xq = pts[0][0] + u * (pts[-1][0] - pts[0][0])
+        head.location = (xq, gy - 0.03, at(xq))
+        head.keyframe_insert('location', frame=f)
+    for fc in fcurves_of_any(head):
+        for kp in fc.keyframe_points:
+            kp.interpolation = 'LINEAR'
+    wash = light("OpsBoardWash", 'AREA', ((x0 + x1) / 2, yf - 0.6, (z0 + z1) / 2), 25, (0.45, 0.85, 0.6),
+                 size=x1 - x0, size_y=z1 - z0, rot=(math.radians(-90), 0, 0))
+    wash.visible_camera = False             # its glow on the yard shows; the light card itself does not
+
+
+def fcurves_of_any(ob):
+    out = []
+    ad = ob.animation_data
+    act = ad.action if ad else None
+    if not act:
+        return out
+    out += list(getattr(act, 'fcurves', []))
+    for layer in getattr(act, 'layers', []):
+        for strip in layer.strips:
+            for cb in getattr(strip, 'channelbags', []):
+                out += list(cb.fcurves)
+    return out
+
+
+def sign_text(name, text, base, height, M, S, halo=ACCENT, face=(0.85, 0.85, 0.82), plate=None, lamps=0):
+    """Channel letters on a wall facing -Y: extruded letters (painted faces, dark returns) stood off the
+    wall, an emissive halo behind them that washes the wall, and optional gooseneck lamps above."""
+    import os
+    fp = os.path.join(os.path.dirname(__file__), 'fonts', 'BarlowCondensed-SemiBold.ttf')
+    fnt = bpy.data.fonts.load(fp, check_existing=True)
+    x, y, z = base
+    mf = grimy(name + "Face", face, metallic=0.2, rough=0.38, var=0.12, streak=0.55, rust=0.04, bump=0.02)
+    ms = plain(name + "Return", (0.03, 0.032, 0.035), 0.6, 0.45)
+    mh = emit(name + "Halo", halo, 22)
+    def letters(nm, depth, mat_front, mat_side, off):
+        cu = bpy.data.curves.new(nm, 'FONT')
+        cu.body = text
+        cu.font = fnt
+        cu.size = height / 0.7
+        cu.align_x = 'CENTER'
+        cu.extrude = depth / 2
+        cu.bevel_depth = 0.004 if depth > 0.03 else 0
+        ob = bpy.data.objects.new(nm + "Tmp", cu)
+        bpy.context.scene.collection.objects.link(ob)
+        dg = bpy.context.evaluated_depsgraph_get()
+        me = bpy.data.meshes.new_from_object(ob.evaluated_get(dg))
+        bpy.data.objects.remove(ob)
+        bpy.data.curves.remove(cu)
+        me.materials.append(mat_front)
+        me.materials.append(mat_side)
+        for p in me.polygons:
+            p.material_index = 0 if abs(p.normal.z) > 0.9 else 1
+        mo = bpy.data.objects.new(nm, me)
+        mo.rotation_euler = (math.radians(90), 0, 0)
+        mo.location = (x, y - off, z)
+        return link(mo, S)
+    letters(name + "Letters", 0.14, mf, ms, 0.15)
+    halo_ob = letters(name + "Halo", 0.01, mh, mh, 0.03)
+    halo_ob.visible_camera = False                     # only its light on the wall shows
+    if plate:
+        x0, x1, z0, z1 = plate
+        box(name + "Rail", x0, x1, y - 0.03, y, z0 + 0.1, z0 + 0.16, M['steel'], S, 0.005)
+    for k in range(lamps):
+        lx = x - (lamps - 1) / 2 * (height * 2.6) + k * height * 2.6
+        top = z + height * 1.3
+        beam(f"{name}Goose{k}", (lx, y, top), (lx, y - 0.9, top + 0.15), 0.05, 0.05, M['steel'], S, bevel=0)
+        cyl(f"{name}GooseShade{k}", lx, y - 0.95, top + 0.02, top + 0.2, 0.17, 0.1, M['steel'], S, 16)
+        light(f"{name}GooseLight{k}", 'SPOT', (lx, y - 0.95, top), 160, (1.0, 0.78, 0.55), size=0.08,
+              rot=(math.radians(28), 0, 0), spot=math.radians(80))
+
+
+def build_signs(M):
+    """Main sign across the front fascia (south face, y -13.14): SOFTWARE FACTORY, periwinkle halo, lamps."""
+    S = "Signs"
+    sign_text("MainSign", "SOFTWARE FACTORY", (-1.5, -13.14, 9.15), 1.25, M, S, halo=ACCENT,
+              plate=(-9.5, 6.5, 8.95, 10.75), lamps=5)
+    return True
+
+
 def build_yard(M):
     S = "Deploy"
     dx0, dx1, dz0, dz1 = 33.5, 51.0, -15.5, 15.5
     box("YardPad", dx0, dx1, dz0, dz1, 0, 0.8, M['concrete'], S)
     n = 0
     for x in (37.5, 45.0):
-        for y in (9.5, 1.5, -6.5):
+        for y in (9.5, -6.5):
             box(f"Server{n}", x - 2.4, x + 2.4, y - 2.2, y + 2.2, 0.8, 4.4, M['server'], S)
             # rooftop cooling
             box(f"Cooler{n}", x - 2.0, x + 2.0, y - 1.8, y + 1.8, 4.4, 5.0, M['galv'], S)
@@ -826,8 +1071,9 @@ def build_yard(M):
             light(f"ServerGlow{n}", 'POINT', (x - 1.0, y - 2.8, 3.8), 15, GREEN, size=0.2)
             n += 1
     # cable trays
-    for y in (9.5, 1.5, -6.5):
+    for y in (9.5, -6.5):
         beam(f"Tray{y}", (34, y, 4.7), (47.4, y, 4.7), 0.6, 0.15, M['galv'], S)
+    build_deploy(M, S)
     # monitoring mast with a beacon
     mx, my = 48.5, 13.0
     for a, b in ((-0.4, -0.4), (0.4, -0.4), (0.4, 0.4), (-0.4, 0.4)):
@@ -1023,8 +1269,8 @@ def build_surroundings_far(M, rnd, S):
                     for i in range(12):
                         beam(f"Wire{k}_{z:.0f}_{sx}_{i}", pts[i], pts[i + 1], 0.06, 0.06, M['steel'], S, bevel=0)
         prev = (x, y)
-    # low haze in the first 60 m of air
-    hz = box("HazeVolume", -1400, 1400, -1400, 1400, -1, 60, haze(), S, 0)
+    # ground haze in the first 35 m of air: fades the far ground and tree lines into the dusk (aerial perspective)
+    hz = box("HazeVolume", -1400, 1400, -1400, 1400, -1, 35, haze(density=0.0009), S, 0)
     hz.visible_shadow = False
     # highway lights
     for k in range(-8, 9):
@@ -1081,6 +1327,7 @@ def build_all(preview=True, vegetation=True, interior=True):
     build_gate_and_school(M)
     build_yard(M)
     build_crane(M)
+    build_signs(M)
     build_poles(M)
     build_props(M)
     build_surroundings(M)

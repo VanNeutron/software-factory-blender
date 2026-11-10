@@ -14,4 +14,6 @@ All 3D assets and the sky come from [Poly Haven](https://polyhaven.com) and are 
   plastic_crate_02, plastic_crate_03, portable_welding_cart, shrub_02, shrub_04, tree_small_02, weed_plant_02,
   wooden_crate_01, wooden_crate_02
 
+Font: Barlow Condensed by The Barlow Project Authors, SIL Open Font License 1.1 (`factory/fonts/OFL.txt`).
+
 Software: Blender (GPL), Blender Lab MCP add-on, Hermes Agent (Nous Research), Claude (Anthropic), ffmpeg.

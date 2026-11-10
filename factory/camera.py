@@ -1,52 +1,58 @@
 """Fly-through camera for the Software Factory (standalone; run inside Blender on the saved scene).
 
-Timing is tied to the line in interior.py: 24 fps, cycle 96 frames (line moves frames 0-30, robots weld
-~43-78 of every cycle). Scene frame 1 = start of cycle 0, when the hero cube (Cube10) slides in from the wall.
-
-Story: intake -> follow the hero cube to robot 1 (welds it as we pass) -> overtake, robot 2 welding the
-cube ahead -> past robot 3 -> inspection gates -> out the east door over the server yard -> rise, orbit the
-site counter-clockwise (silhouettes against the sunset on the south side) -> pull back to the poster frame.
+Timing is tied to the line in interior.py: 24 fps, cycle 96 frames (line indexes on cycle frames 0-30).
+The film runs scene frames 73-936 (36 s). The hero cube is Cube11: it waits in the intake tunnel, comes
+through the roll-up door on frames ~108-115, rests, then rides into station 1 (frames 193-223), where the
+handling robot lowers a steel cover over it (frames 241-257). The welders on stations 2 and 3 seam-weld the
+cubes ahead as the camera overtakes, then it runs through the inspection gates, out of the east door, and
+watches a finished package roll into the deployment building, sweeps over the roof, and makes a slow pass along
+the front and its sign before it pulls back to the poster frame.
 """
 import bpy, math
 from mathutils import Vector
 
 C = (6.0, 2.0, 4.0)          # orbit centre (site)
-R_ORB, Z_ORB = 92.0, 38.0
+FILM = (73, 936)
 
 
-def orbit(a_deg, z=Z_ORB, r=R_ORB):
+def orbit(a_deg, z, r):
     a = math.radians(a_deg)
     return (C[0] + r * math.cos(a), C[1] + r * math.sin(a), z)
 
 
 # (frame, camera position, look-at target, lens mm)
 WAYPOINTS = [
-    (1,   (-24.2, -3.6, 3.9),  (-29.0, -1.0, 4.1), 22),   # intake: the idea cube slides out of the wall
-    (24,  (-24.6, -3.3, 4.2),  (-27.4, -1.0, 4.2), 22),
-    (60,  (-26.4, -2.7, 5.4),  (-23.0, -1.0, 4.3), 22),   # swing round behind it; sparks down the line
-    (96,  (-28.0, -1.1, 6.0),  (-20.0, -1.0, 4.4), 22),
-    (126, (-24.6, -1.1, 6.2),  (-17.0, -0.8, 4.6), 22),   # line indexes: ride along behind the cube
-    (140, (-22.2, -1.3, 6.4),  (-19.7, -0.6, 4.8), 22),   # robot 1 starts welding the hero cube
-    (156, (-19.0, -1.6, 6.6),  (-14.5, -2.0, 4.9), 22),   # overtake; robot 2 welding the cube ahead
-    (172, (-15.4, -1.2, 6.6),  (-11.5, -1.6, 4.5), 22),
-    (192, (-10.6, -1.0, 6.3),  (-2.0, -1.0, 4.6), 22),    # past robot 3, speeding up
-    (222, (-2.5, -1.0, 5.9),   (7.0, -1.0, 4.8), 22),
-    (252, (5.5, -1.0, 5.6),    (16.0, -1.0, 4.8), 22),    # inspection gate 1 (x 4.5, beam at 6.8 m)
-    (280, (13.5, -1.2, 5.6),   (24.0, -1.4, 4.9), 22),    # gate 2 (x 13)
-    (306, (21.5, -1.6, 5.6),   (32.0, -2.0, 5.2), 22),
-    (326, (27.5, -2.0, 5.8),   (40.0, -2.6, 6.0), 22),    # east door
-    (350, (35.0, -2.6, 7.2),   (46.0, -2.6, 8.0), 24),    # over the server yard, between the modules
-    (378, (44.0, -4.0, 14.0),  (34.0, 0.0, 5.0), 26),     # rise and pivot back to the building
-    (410, orbit(5, 26, 70),    C, 28),
-    (450, orbit(50, 33, 82),   C, 28),                     # north-east: silos and crane
-    (490, orbit(100, 38, 90),  C, 28),
-    (530, orbit(150, 40),      C, 28),                     # west: intake and hopper
-    (570, orbit(200, 40),      C, 28),
-    (610, orbit(250, 38),      C, 28),                     # south: crane + silos against the sunset
-    (645, orbit(295, 36),      C, 30),                     # gatehouse and training pavilion
-    (670, orbit(318, 36, 95),  C, 30),
-    (730, (122.0, -122.0, 46.0), (0.0, 6.0, 6.0), 32),     # pull back to the poster frame
-    (744, (124.0, -124.0, 46.5), (0.0, 6.0, 6.0), 32),
+    (73,  (-23.2, -5.0, 4.6),  (-28.6, -1.0, 4.3), 26),   # intake door closed, beacon starts at 87
+    (100, (-23.6, -4.8, 4.7),  (-28.5, -1.0, 4.3), 26),   # door rolls up; the glass cube glides in (108-115)
+    (130, (-24.2, -4.7, 5.0),  (-25.6, -1.0, 4.3), 26),
+    (152, (-25.0, -5.0, 5.4),  (-21.5, -0.4, 4.8), 26),   # turn east: robot 1 lowers a cover on the cube ahead
+    (180, (-25.0, -5.3, 5.6),  (-21.0, -0.4, 4.9), 26),
+    (215, (-22.8, -5.0, 5.6),  (-19.8, 0.0, 5.0), 25),    # hero cube indexes into station 1
+    (245, (-21.4, -4.6, 5.5),  (-20.0, 0.0, 5.3), 24),    # the cover comes down over the glass (241-257)
+    (260, (-19.0, -5.4, 5.4),  (-14.4, -1.9, 3.9), 24),   # robot 2 welds the front seam of the cube ahead
+    (272, (-16.4, -1.1, 7.1),  (-11.0, -1.2, 4.4), 26),   # over the line, between the welders
+    (285, (-11.2, -1.0, 7.2),  (-7.2, -0.2, 4.0), 26),    # robot 3 welds the back seam
+    (298, (-6.0, -1.0, 6.8),   (2.0, -1.0, 4.6), 25),
+    (322, (-1.2, -1.3, 6.3),   (4.0, -1.0, 4.4), 24),    # slow down: gate 1 laser-scans the resting package
+    (342, (2.4, -1.1, 6.15),   (9.0, -1.0, 4.6), 24),    # under gate 1 (x 4)
+    (358, (8.8, -1.1, 6.0),    (16.0, -1.0, 4.8), 24),   # gate 2 (x 16): inspection cameras flash
+    (374, (16.0, -1.4, 6.0),   (26.0, -1.8, 5.0), 24),    # gate 2 (x 16): inspection cameras flash, light turns green
+    (396, (23.0, -1.8, 5.9),   (34.0, -2.3, 5.4), 24),
+    (414, (28.5, -2.2, 6.0),   (40.0, -2.6, 5.6), 24),    # east door
+    (440, (31.5, -5.4, 7.0),   (35.6, -1.2, 4.4), 24),    # out over the yard: a package waits at the deploy door
+    (470, (31.2, -7.6, 7.6),   (35.4, -1.0, 4.5), 24),    # door rolls up (471-483), it rides in, status flashes
+    (500, (33.0, -10.5, 9.5),  (41.5, -2.5, 6.8), 24),    # door closes; OPERATIONS sign and live board come into view
+    (530, (40.0, -12.0, 17.0), (20.0, 0.0, 6.0), 26),     # rise, turn back to the building
+    (565, (30.0, 2.0, 30.0),   (-10.0, 4.0, 6.0), 26),    # quick crane move over the roof towards the sunset
+    (600, (-16.0, 2.0, 28.0),  (-28.0, -30.0, 6.0), 26),
+    (640, (-46.0, -30.0, 15.0), (-16.0, -13.0, 7.0), 27),  # down past the intake building to the front
+    (690, (-34.0, -40.0, 11.0), (-14.0, -13.0, 7.0), 28), # slow pass along the front facade
+    (750, (-5.0, -42.0, 9.5),  (-1.5, -13.0, 9.0), 38),   # SOFTWARE FACTORY sign
+    (805, (22.0, -46.0, 12.0), (5.0, -11.0, 7.0), 30),
+    (850, (44.0, -53.0, 17.5), (4.0, 0.0, 6.0), 30),
+    (890, (54.0, -58.0, 21.5), (2.0, 4.0, 6.0), 30),      # pull back to the poster frame
+    (924, (58.0, -62.0, 22.0), (2.0, 4.0, 6.0), 30),
+    (936, (58.4, -62.4, 22.05), (2.0, 4.0, 6.0), 30),
 ]
 
 
@@ -113,11 +119,11 @@ def build_camera(name="FlyCam"):
                 for kp in fc.keyframe_points:
                     kp.interpolation = 'LINEAR'
     scn.camera = ob
-    scn.frame_start, scn.frame_end = f0, f1
+    scn.frame_start, scn.frame_end = FILM
     return speeds
 
 
 speeds = build_camera()
 mx = max(speeds, key=lambda s: s[1])
 print("CAMERA_DONE frames", bpy.context.scene.frame_start, bpy.context.scene.frame_end,
-      "max speed m/s", mx, "interior max", max(s[1] for s in speeds if s[0] < 330))
+      "max speed m/s", mx, "interior max", max(s[1] for s in speeds if s[0] < 414))

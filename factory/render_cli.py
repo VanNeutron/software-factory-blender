@@ -29,7 +29,7 @@ scn.render.use_stamp_hostname = False
 scn.cycles.samples = args.get('samples', 128)
 scn.render.resolution_percentage = args.get('pct', 50)
 scn.render.use_motion_blur = bool(args.get('blur', False))
-scn.render.motion_blur_shutter = a.get('shutter', 0.3)
+scn.render.motion_blur_shutter = args.get('shutter', 0.3)
 c = args.get('cam')
 if c:
     cam = bpy.data.objects.get('CliCam') or bpy.data.objects.new('CliCam', bpy.data.cameras.new('CliCam'))

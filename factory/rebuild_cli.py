@@ -32,4 +32,4 @@ for fr in range(1, 200):
                     bad += 1
 scn.frame_set(1)
 bpy.ops.wm.save_mainfile()
-print("REBUILD_DONE objects", n, "glare", bpy.app.driver_namespace.get('glare'), "alive", alive, "bad", bad)
+print("REBUILD_DONE objects", n, "grip_err", bpy.app.driver_namespace.get("grip_err"), "glare", bpy.app.driver_namespace.get('glare'), "alive", alive, "bad", bad)

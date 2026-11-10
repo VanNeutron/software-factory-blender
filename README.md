@@ -1,10 +1,12 @@
 # The Software Factory, rendered
 
-A 31-second cinematic fly-through of a realistic, sunset-lit factory. It is built and rendered entirely from Python scripts by an AI agent driving Blender, under the direction of [Matthew Grunert](https://grunertlabs.ca).
+A 36-second cinematic fly-through of a realistic, sunset-lit factory. It is built and rendered entirely from Python scripts by an AI agent driving Blender, under the direction of [Matthew Grunert](https://grunertlabs.ca).
 
-The factory follows the six-stage *Software Factory* figure on [grunertlabs.ca](https://grunertlabs.ca): data foundation, identity platform, people and education, harness and governance, production line, deployed and monitored. On the production line, glowing glass "idea" cubes come in at one end. Three six-axis robots weld each cube, station by station, into a finished product, which leaves through the far door.
+The factory follows the six-stage *Software Factory* figure on [grunertlabs.ca](https://grunertlabs.ca): data foundation, identity platform, people and education, harness and governance, production line, deployed and monitored. Glowing glass "idea" cubes ride in from an intake building through a high-speed roll-up door. A handling robot with a vacuum gripper lowers a labelled steel cover over each one; two welding robots seam-weld the cover to its base tray (sparks, a glowing bead that cools). Two inspection gates laser-scan and photograph each package, a status light turns green, and the line ends in the Operations building, whose LED board shows a live pulse trace and moving bar graphs. The film ends on the "SOFTWARE FACTORY" channel-letter sign and a wide sunset view.
 
-![Inside the hall: haze, sun shafts and the welding line](docs/img/06-haze-and-sun.jpg)
+![The final frame: the factory, its sign and the Operations building at sunset](docs/img/00-final-poster.jpg)
+
+Watch the film: [grunertlabs.ca/projects/software-factory/](https://grunertlabs.ca/projects/software-factory/)
 
 ## How it was made
 
@@ -27,9 +29,9 @@ flowchart LR
 
 | | |
 |---|---|
-| Scene objects | ~5,000, plus ~400,000 grass instances and ~1,100 scanned trees |
+| Scene objects | ~6,400, plus ~400,000 grass instances and ~2,400 scanned trees |
 | Robots | 3 rigged six-axis arms; joint angles from analytic inverse kinematics, cable packs that follow the arm |
-| Film | 744 frames at 24 fps, 1080p, Cycles path tracing with volumetric haze and motion blur |
+| Film | 864 frames at 24 fps, 1080p, Cycles path tracing with volumetric haze and motion blur; final render 6 h 27 min on one RTX 5070 Ti (about 27 s a frame) |
 | Assets | 41 photo-scanned textures, models and one sky from Poly Haven (CC0) |
 
 ### The process
@@ -42,6 +44,10 @@ flowchart LR
 | Box "robots", uniform floor and boxes | Rigged welding robots, scanned floor with joints and tyre tracks, varied pallet loads |
 
 ![Welding close-up](docs/img/05-welding.jpg)
+
+| Handling robot lowers a cover | Gate 1 laser scan |
+|---|---|
+| ![Cover robot](docs/img/07-cover-robot.jpg) | ![Laser scan](docs/img/08-laser-scan.jpg) |
 
 ### What went wrong
 
@@ -60,7 +66,11 @@ factory/run.py             loads the build script inside Blender
 factory/rebuild_cli.py     headless rebuild + particle sanity check + save
 factory/render_cli.py      headless still render (OptiX, CUDA or Metal, picked automatically)
 factory/anim_cli.py        headless animation render
+factory/stills_cli.py      headless review stills at chosen frames (steps the sims through every frame)
+factory/textures/          box artwork (stencils, shipping label, barcode, QR), made by tools/make_labels.py
+factory/fonts/             Barlow Condensed SemiBold for the signs (SIL Open Font License, OFL.txt)
 tools/fetch_assets.py      downloads the Poly Haven assets (~650 MB)
+tools/make_labels.py       regenerates the box artwork (needs Pillow, qrcode, python-barcode; macOS fonts)
 ```
 
 ## Build it yourself

@@ -537,11 +537,21 @@ def emitter_mesh(name, cells, coll):
 def allowed(x, y):
     if -43 < x < 57 and -32 < y < 32:                # site
         return False
+
     if -50 < y < -34:                                # highway + verge
         return False
     if -16 < x < -4 and y < -30:                      # access road
         return False
     return True
+
+
+def tree_ok(x, y):
+    """allowed(), minus a clearing along the camera's final pullback (keeps the poster view out of the trees)."""
+    if not allowed(x, y):
+        return False
+    px, py, qx, qy = 40.0, -40.0, 66.0, -70.0
+    t = max(0.0, min(1.0, ((x - px) * (qx - px) + (y - py) * (qy - py)) / ((qx - px) ** 2 + (qy - py) ** 2)))
+    return math.hypot(x - (px + t * (qx - px)), y - (py + t * (qy - py))) >= 16.0
 
 
 def build_vegetation(coll, seed=3):
@@ -612,9 +622,27 @@ def build_vegetation(coll, seed=3):
         for j in range(rnd.randint(4, 12)):
             vc = rnd.choice(trees)
             s = rnd.uniform(0.8, 1.3) if 'fir' in vc.name else rnd.uniform(2.2, 3.4)
-            place(vc, (x0 + rnd.uniform(-10, 10), y0 + rnd.uniform(-10, 10), 0), rnd.uniform(0, 6.28), s, coll)
+            x, y = x0 + rnd.uniform(-10, 10), y0 + rnd.uniform(-10, 10)
             n += 1
-    return n
+            if tree_ok(x, y):
+                place(vc, (x, y, 0), rnd.uniform(0, 6.28), s, coll)
+    # tree belt closing the south and east sides (the orbit looks that way): dense near ring, thinner behind
+    m = 0
+    while m < 1300:
+        a = rnd.uniform(math.radians(-110), math.radians(50))
+        r = rnd.uniform(68, 110) if m < 800 else rnd.uniform(110, 260)
+        x0, y0 = cx + r * math.cos(a), r * math.sin(a)
+        if not allowed(x0, y0):
+            continue
+        for j in range(rnd.randint(5, 12)):
+            vc = rnd.choice(trees)
+            s = rnd.uniform(0.85, 1.4) if 'fir' in vc.name else rnd.uniform(2.4, 3.6)
+            x, y = x0 + rnd.uniform(-9, 9), y0 + rnd.uniform(-9, 9)
+            if not tree_ok(x, y):
+                continue
+            place(vc, (x, y, 0), rnd.uniform(0, 6.28), s, coll)
+            m += 1
+    return n + m
 
 
 def build_props(coll, seed=5):

@@ -14,13 +14,24 @@ from mathutils import Vector, Matrix, Euler
 FPS = 24
 CYCLE = 96
 MOVE = 30
-NCYC = 8                      # 8 cycles = 768 frames (covers the 744-frame fly-through)
+NCYC = 11                     # 11 cycles = 1056 frames (film runs frames 73-936)
 PITCH = 6.0
 CUBE = 1.2
 BELT_TOP = 3.52
 STATIONS = [(-20.0, +1, 0), (-14.0, -1, 2), (-8.0, +1, 4)]   # (x, side: +1 back / -1 front, frame stagger)
 ROBOT_Y = {+1: 1.95, -1: -3.95}
 ROBOT_Z = 2.2
+# station 1 is a handling robot on a tall pedestal: it lowers a steel cover over each glass cube.
+# stations 2 and 3 weld the cover to the base tray (front seam, then back seam).
+GRIP_Y, GRIP_Z = 1.5, 3.4
+TRAY = 0.06                   # base tray thickness under the glass cube
+COV = 0.65                    # half width of the steel cover (outer)
+COV_H = 1.28                  # cover height (sits on the tray)
+COV_T = 0.012                 # cover sheet thickness
+STACK_Y = GRIP_Y + 2.2        # cover stack behind the handling robot
+STACK_Z0 = 2.9                # stack stand top
+STACK_STEP = 0.05             # nested covers add 5 cm each
+STACK_N = NCYC + 3
 
 # link lengths (m) of the robot, matched in the geometry below
 SH_R, SH_Z = 0.35, 1.17       # shoulder axis in the arm plane (forward, up) from the base origin
@@ -118,7 +129,10 @@ def robot_materials(M):
     R['idea_core'] = emit("IdeaCore", (0.16, 0.22, 1.0), 2.2)
     R['idea_shell'] = frosted("IdeaShell")
     R['frame'] = grimy("CubeFrame", (0.09, 0.095, 0.1), metallic=0.9, rough=0.35, var=0.15, streak=0.1, bump=0.05)
-    R['panel'] = M['galv']
+    R['cover'] = grimy("CoverPaint", (0.46, 0.47, 0.5), metallic=0.0, rough=0.42, var=0.05, streak=0.08, bump=0.004)
+    R['tray'] = grimy("TraySteel", (0.2, 0.21, 0.22), metallic=0.9, rough=0.4, var=0.15, streak=0.2, bump=0.04)
+    R['grip'] = grimy("GripperAlu", (0.62, 0.63, 0.65), metallic=1.0, rough=0.35, var=0.08, streak=0.05, bump=0.02)
+    R['bead'] = bead_mat()
     R['seam'] = emit("SeamGlow", (0.16, 0.22, 1.0), 3)
     R['hazard'] = hazard_mat()
     R['mesh'] = wire_mesh_mat()
@@ -126,6 +140,30 @@ def robot_materials(M):
     R['wood'] = wood_mat()
     R['checker'] = M['steel']
     return R
+
+
+def bead_mat():
+    """Weld bead. Object colour drives it: R = weld progress (0-1), G = cooling (0 hot -> 1 cold).
+    The last ~35 cm behind the torch glow orange and cool to dark steel."""
+    m, nt, b = A['new_mat']("WeldBead")
+    oi = nt.nodes.new('ShaderNodeObjectInfo')
+    sep = nt.nodes.new('ShaderNodeSeparateColor')
+    nt.links.new(oi.outputs['Color'], sep.inputs[0])
+    v = A['coords'](nt)
+    sx = nt.nodes.new('ShaderNodeSeparateXYZ')
+    nt.links.new(v, sx.inputs[0])
+    u = A['math_'](nt, 'DIVIDE', sx.outputs[0], 2 * COV)                     # 0 at the start, 1 at the torch
+    behind = A['math_'](nt, 'MULTIPLY', A['math_'](nt, 'SUBTRACT', 1.0, u), sep.outputs[0])
+    behind = A['math_'](nt, 'MULTIPLY', behind, 2 * COV)                     # metres behind the torch
+    heat = A['math_'](nt, 'SUBTRACT', 1.0, A['math_'](nt, 'DIVIDE', behind, 0.35), clamp=True)
+    heat = A['math_'](nt, 'MULTIPLY', heat, A['math_'](nt, 'SUBTRACT', 1.0, sep.outputs[1]), clamp=True)
+    h2 = A['math_'](nt, 'MULTIPLY', heat, heat)
+    b.inputs['Base Color'].default_value = (0.12, 0.11, 0.1, 1)
+    b.inputs['Metallic'].default_value = 0.8
+    b.inputs['Roughness'].default_value = 0.45
+    b.inputs['Emission Color'].default_value = (1.0, 0.33, 0.05, 1)
+    nt.links.new(A['math_'](nt, 'MULTIPLY', h2, 30.0), b.inputs['Emission Strength'])
+    return m
 
 
 def frosted(name):
@@ -265,11 +303,11 @@ def floor_mat():
 # robot model + rig
 # --------------------------------------------------------------------------
 
-def make_robot(tag, x, side, R, sub):
-    """Six-axis welding robot. Joints are empties: J1 yaw(Z), J2 pitch(X), J3 pitch(X), J4 roll(Y),
-    J5 pitch(X), J6 roll(Y). Robot forward is local +Y."""
-    y = ROBOT_Y[side]
-    root = empty(f"{tag}_Root", None, (x, y, ROBOT_Z), sub, 0.6)
+def make_robot(tag, x, side, R, sub, y=None, z=None, tool='torch'):
+    """Six-axis robot (MIG torch or vacuum gripper). Joints are empties: J1 yaw(Z), J2 pitch(X), J3 pitch(X),
+    J4 roll(Y), J5 pitch(X), J6 roll(Y). Robot forward is local +Y."""
+    y = ROBOT_Y[side] if y is None else y
+    root = empty(f"{tag}_Root", None, (x, y, ROBOT_Z if z is None else z), sub, 0.6)
     root.rotation_euler = (0, 0, math.pi if side > 0 else 0.0)
     P, D, S, C = R['paint'], R['dark'], R['steel'], R['copper']
     # base
@@ -326,8 +364,12 @@ def make_robot(tag, x, side, R, sub):
     tube(f"{tag}_Forearm", (0, 0, 0), (0, 1.12, 0), 0.18, 0.14, P, sub, 40, j4)
     for sx in (-1, 1):
         pbox(f"{tag}_WristFork{sx}", sx * 0.1 if sx > 0 else -0.17, 0.17 if sx > 0 else -0.1, 1.05, 1.42, -0.14, 0.14, P, sub, j4, 0.04)
-    pbox(f"{tag}_WireFeeder", -0.13, 0.13, 0.25, 0.7, 0.16, 0.4, D, sub, j4, 0.03)
-    tube(f"{tag}_WireSpool", (-0.12, 0.47, 0.42), (0.12, 0.47, 0.42), 0.13, 0.13, S, sub, 24, j4)
+    if tool == 'torch':
+        pbox(f"{tag}_WireFeeder", -0.13, 0.13, 0.25, 0.7, 0.16, 0.4, D, sub, j4, 0.03)
+        tube(f"{tag}_WireSpool", (-0.12, 0.47, 0.42), (0.12, 0.47, 0.42), 0.13, 0.13, S, sub, 24, j4)
+    else:
+        pbox(f"{tag}_VacuumValve", -0.11, 0.11, 0.3, 0.62, 0.15, 0.33, D, sub, j4, 0.03)
+        tube(f"{tag}_VacuumGauge", (0, 0.46, 0.33), (0, 0.46, 0.38), 0.05, 0.05, S, sub, 16, j4)
     # J5 wrist pitch
     j5 = empty(f"{tag}_J5", j4, (0, 1.35, 0), sub)
     tube(f"{tag}_WristHub", (-0.1, 0, 0), (0.1, 0, 0), 0.12, 0.12, D, sub, 32, j5)
@@ -335,12 +377,25 @@ def make_robot(tag, x, side, R, sub):
     # J6 flange + MIG torch, tip at J5 + LT along +Y
     j6 = empty(f"{tag}_J6", j5, (0, 0.12, 0), sub)
     tube(f"{tag}_Flange", (0, 0, 0), (0, 0.03, 0), 0.1, 0.1, S, sub, 32, j6)
-    pbox(f"{tag}_TorchMount", -0.05, 0.05, 0.03, 0.1, -0.07, 0.07, D, sub, j6, 0.01)
-    tube(f"{tag}_TorchBody", (0, 0.1, 0), (0, 0.33, 0), 0.045, 0.04, D, sub, 24, j6)
-    tube(f"{tag}_TorchInsul", (0, 0.33, 0), (0, 0.37, 0), 0.042, 0.042, R['cable_grey'], sub, 24, j6)
-    tube(f"{tag}_TorchNeck", (0, 0.37, 0), (0, 0.46, 0), 0.032, 0.03, C, sub, 24, j6)
-    tube(f"{tag}_Nozzle", (0, 0.46, 0), (0, LT - 0.12 - 0.01, 0), 0.03, 0.021, C, sub, 24, j6)
-    tip = empty(f"{tag}_Tip", j6, (0, LT - 0.12, 0), sub, 0.05)
+    TL = LT - 0.12
+    if tool == 'torch':
+        pbox(f"{tag}_TorchMount", -0.05, 0.05, 0.03, 0.1, -0.07, 0.07, D, sub, j6, 0.01)
+        tube(f"{tag}_TorchBody", (0, 0.1, 0), (0, 0.33, 0), 0.045, 0.04, D, sub, 24, j6)
+        tube(f"{tag}_TorchInsul", (0, 0.33, 0), (0, 0.37, 0), 0.042, 0.042, R['cable_grey'], sub, 24, j6)
+        tube(f"{tag}_TorchNeck", (0, 0.37, 0), (0, 0.46, 0), 0.032, 0.03, C, sub, 24, j6)
+        tube(f"{tag}_Nozzle", (0, 0.46, 0), (0, TL - 0.01, 0), 0.03, 0.021, C, sub, 24, j6)
+    else:
+        # vacuum gripper: tool changer, cross frame, four suction cups; cup faces at the tip plane
+        tube(f"{tag}_ToolChanger", (0, 0.03, 0), (0, 0.13, 0), 0.11, 0.11, D, sub, 32, j6)
+        tube(f"{tag}_GripMast", (0, 0.13, 0), (0, TL - 0.17, 0), 0.06, 0.06, S, sub, 24, j6)
+        pbox(f"{tag}_GripBarX", -0.52, 0.52, TL - 0.2, TL - 0.13, -0.05, 0.05, R['grip'], sub, j6, 0.01)
+        pbox(f"{tag}_GripBarZ", -0.05, 0.05, TL - 0.2, TL - 0.13, -0.52, 0.52, R['grip'], sub, j6, 0.01)
+        for k, (cx, cz) in enumerate(((0.46, 0), (-0.46, 0), (0, 0.46), (0, -0.46))):
+            tube(f"{tag}_CupStem{k}", (cx, TL - 0.13, cz), (cx, TL - 0.07, cz), 0.018, 0.018, S, sub, 12, j6)
+            tube(f"{tag}_Cup{k}", (cx, TL - 0.07, cz), (cx, TL - 0.002, cz), 0.03, 0.065, R['hose'], sub, 24, j6)
+            tube(f"{tag}_CupHose{k}", (cx * 0.5, TL - 0.2, cz * 0.5), (cx * 0.15, TL - 0.32, cz * 0.15), 0.012, 0.012,
+                 R['cable_yel'], sub, 8, j6)
+    tip = empty(f"{tag}_Tip", j6, (0, TL, 0), sub, 0.05)
     J = dict(root=root, j1=j1, j2=j2, j3=j3, j4=j4, j5=j5, j6=j6, tip=tip)
     return J
 
@@ -422,23 +477,25 @@ def pose(J, ang, frame, roll=0.0):
         J[k].keyframe_insert('rotation_euler', frame=frame)
 
 
+WELD_START, WELD_END = 58, 90   # cycle frames of the seam weld (plus the station's stagger, max 4)
+
+
 def robot_track(x, side, stagger):
-    """Waypoints for one cycle: list of (t0, t1, from, to, weld) in cycle frames; points are (x, y, z, psi)."""
-    edge = -0.4 if side > 0 else -1.6
-    out = 0.02 * (1 if side > 0 else -1)
-    top = BELT_TOP + CUBE + 0.025
-    tilt = -math.radians(62)
-    home = (x - 0.2, edge + side * 1.1, top + 1.1, -math.radians(35))
-    a1 = (x - 0.48, edge + out, top + 0.3, tilt)
-    s1 = (x - 0.48, edge + out, top, tilt)
-    e1 = (x + 0.48, edge + out, top, tilt)
-    l1 = (x + 0.48, edge + side * 0.25, top + 0.25, tilt)
-    s2 = (x + 0.62, edge + side * 0.05, top - 0.12, -math.radians(28))
-    e2 = (x + 0.62, edge + side * 0.05, BELT_TOP + 0.15, -math.radians(22))
+    """Welder waypoints for one cycle: list of (t0, t1, from, to, weld) in cycle frames; points are (x, y, z, psi).
+    The torch runs along the base seam where the steel cover meets the tray, on the robot's side of the cube."""
+    ys = -1.0 + side * COV + side * 0.012          # just outside the cover face
+    zs = BELT_TOP + TRAY + 0.012
+    tilt = -math.radians(45)
+    home = (x - 0.2, ys + side * 1.1, BELT_TOP + COV_H + 0.9, -math.radians(35))
+    a1 = (x - COV - 0.02, ys + side * 0.25, zs + 0.25, tilt)
+    s1 = (x - COV - 0.02, ys, zs, tilt)
+    e1 = (x + COV + 0.02, ys, zs, tilt)
+    l1 = (x + COV + 0.02, ys + side * 0.3, zs + 0.3, tilt)
     s = stagger
-    return [(0, 30 + s, home, home, False), (30 + s, 40 + s, home, a1, False), (40 + s, 43 + s, a1, s1, False),
-            (43 + s, 58 + s, s1, e1, True), (58 + s, 61 + s, e1, l1, False), (61 + s, 66 + s, l1, s2, False),
-            (66 + s, 78 + s, s2, e2, True), (78 + s, 90 + s, e2, home, False), (90 + s, CYCLE, home, home, False)]
+    # after the weld the torch backs off and waits clear of the seam; it returns home while the line indexes
+    w0, w1 = WELD_START + s, WELD_END + s
+    return [(0, 16, l1, home, False), (16, w0 - 13, home, home, False), (w0 - 13, w0 - 3, home, a1, False),
+            (w0 - 3, w0, a1, s1, False), (w0, w1, s1, e1, True), (w1, CYCLE, e1, l1, False)]
 
 
 def lerp4(a, b, t):
@@ -460,14 +517,71 @@ def animate_robot(J, x, side, stagger, R, sub, tag):
                 pose(J, ik(J, p[:3], p[3]), base + t, roll)
             if weld:
                 welds.append((base + t0, base + t1))
-    # linear keys (dense samples)
+    linear_keys(J)
+    return welds
+
+
+def linear_keys(J):
     for k in ('j1', 'j2', 'j3', 'j4', 'j5'):
         ad = J[k].animation_data
         if ad and ad.action:
             for fc in fcurves_of(ad.action):
                 for kp in fc.keyframe_points:
                     kp.interpolation = 'LINEAR'
-    return welds
+
+
+# handling robot (station 1): cycle frames
+G_PICK, G_PLACE = 10, 64          # vacuum on at the stack / off on the cube
+
+
+def stack_top(n):
+    """Tool-tip height on the top cover of the stack before pick number n (0-based)."""
+    return STACK_Z0 + COV_H + (STACK_N - 1 - n) * STACK_STEP
+
+
+def grip_track(x, n):
+    """Waypoints (frame t0, t1, from, to, mode) for cycle n; points are (angle_deg, r, z) around the robot base,
+    mode 'lin' = straight line, 'arc' = swing around the base. Tool points straight down throughout."""
+    st = stack_top(n)
+    st_next = stack_top(n + 1)
+    seat = BELT_TOP + TRAY + COV_H
+    hover = BELT_TOP + TRAY + CUBE + 0.1 + COV_H
+    rs, rc = STACK_Y - GRIP_Y, GRIP_Y - (-1.0)
+    above = (90, rs, st + 0.35)
+    pick = (90, rs, st)
+    up = (90, rs, st + COV_H + 0.15)
+    hov = (270, rc, hover)
+    put = (270, rc, seat)
+    lift = (270, rc, seat + 0.35)
+    back = (90, rs, st_next + 0.35)
+    return [(0, 8, above, pick, 'lin'), (8, 12, pick, pick, 'lin'), (12, 24, pick, up, 'lin'),
+            (24, 48, up, hov, 'arc'), (48, 62, hov, put, 'lin'), (62, 66, put, put, 'lin'),
+            (66, 74, put, lift, 'lin'), (74, 96, lift, back, 'arc')]
+
+
+def animate_gripper(J, x, n_cycles):
+    """Keys the handling robot; returns per-cycle (pick_frame, place_frame)."""
+    cx, cy = x, GRIP_Y
+    def world(pt):
+        a, r, z = pt
+        return (cx + r * math.cos(math.radians(a)), cy + r * math.sin(math.radians(a)), z)
+    events = []
+    down = -math.pi / 2
+    for n in range(n_cycles):
+        base = 1 + n * CYCLE
+        for (t0, t1, a, b, mode) in grip_track(x, n):
+            for t in range(t0, t1, 1):
+                u = smooth((t - t0) / max(1, t1 - t0))
+                if mode == 'arc':
+                    p = tuple(a[i] + (b[i] - a[i]) * u for i in range(3))
+                    P = world(p)          # swings round the west side (angle 90 -> 180 -> 270)
+                else:
+                    pa, pb = Vector(world(a)), Vector(world(b))
+                    P = tuple(pa + (pb - pa) * u)
+                pose(J, ik(J, P, down), base + t, 0.0)
+        events.append((base + G_PICK, base + G_PLACE))
+    linear_keys(J)
+    return events
 
 
 def fcurves_of(action):
@@ -569,11 +683,18 @@ def spark_object(R, sub):
     return ob
 
 
-def robot_cell(tag, x, side, R, M, sub):
-    y = ROBOT_Y[side]
-    y0, y1 = (0.75, 3.3) if side > 0 else (-5.1, -2.55)
-    pbox(f"{tag}_Riser", x - 1.05, x + 1.05, y0 + 0.05, y1 - 0.05, F, ROBOT_Z - 0.03, M['steel'], sub, None, 0.03)
-    pbox(f"{tag}_RiserTop", x - 1.1, x + 1.1, y0, y1, ROBOT_Z - 0.03, ROBOT_Z, M['steel'], sub, None, 0.01)
+def robot_cell(tag, x, side, R, M, sub, z=ROBOT_Z, yr=None):
+    y0, y1 = yr or ((0.75, 3.3) if side > 0 else (-5.1, -2.55))
+    hw = 1.05 if z == ROBOT_Z else 0.85
+    pbox(f"{tag}_Riser", x - hw, x + hw, y0 + 0.05, y1 - 0.05, F, z - 0.03, M['steel'], sub, None, 0.03)
+    pbox(f"{tag}_RiserTop", x - hw - 0.05, x + hw + 0.05, y0, y1, z - 0.03, z, M['steel'], sub, None, 0.01)
+    if z != ROBOT_Z:
+        # access ladder on the east face of the tall pedestal
+        for k in range(int((z - F) / 0.3)):
+            zz = F + 0.3 * (k + 1)
+            pbox(f"{tag}_Rung{k}", x + hw + 0.02, x + hw + 0.06, y1 - 0.75, y1 - 0.3, zz - 0.015, zz + 0.015, R['cable_yel'], sub, None, 0.004)
+        for yy in (y1 - 0.75, y1 - 0.3):
+            pbox(f"{tag}_LadderRail{yy:.2f}", x + hw + 0.02, x + hw + 0.07, yy - 0.025, yy + 0.025, F, z + 0.9, R['cable_yel'], sub, None, 0.004)
     # floor hazard frame around the cell
     fy0, fy1 = (y0 - 0.4, y1 + 2.6) if side > 0 else (y0 - 2.4, y1 + 0.4)
     for (a0, a1, b0, b1) in ((x - 2.6, x + 2.6, fy0, fy0 + 0.15), (x - 2.6, x + 2.6, fy1 - 0.15, fy1),
@@ -603,31 +724,151 @@ def robot_cell(tag, x, side, R, M, sub):
 # product cubes on the indexed line
 # --------------------------------------------------------------------------
 
+def cover_mesh(R):
+    """Five-sided steel cover, open at the bottom; origin at the centre of the top face (the gripper's pick point)."""
+    me = bpy.data.meshes.get("CoverMesh")
+    if me:
+        return me
+    h, H = COV, COV_H
+    bm = bmesh.new()
+    v = [bm.verts.new(c) for c in ((-h, -h, -H), (h, -h, -H), (h, h, -H), (-h, h, -H),
+                                   (-h, -h, 0), (h, -h, 0), (h, h, 0), (-h, h, 0))]
+    for f in ((4, 5, 6, 7), (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)):
+        bm.faces.new([v[i] for i in f])
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    me = bpy.data.meshes.new("CoverMesh")
+    bm.to_mesh(me); bm.free()
+    me.materials.append(R['cover'])
+    return me
+
+
+DECALS = {}          # cover object name -> its artwork decal objects
+_DECAL_MATS = {}
+
+
+def decal_mat(fname):
+    """Box artwork (tools/make_labels.py): sprayed stencils and a paper shipping label, alpha-cut."""
+    if fname in _DECAL_MATS:
+        return _DECAL_MATS[fname]
+    import os
+    m, nt, b = A['new_mat']("Decal_" + fname.rsplit('.', 1)[0])
+    img = bpy.data.images.load(os.path.join(os.path.dirname(__file__), 'textures', fname), check_existing=True)
+    tex = nt.nodes.new('ShaderNodeTexImage')
+    tex.image = img
+    tc = nt.nodes.new('ShaderNodeTexCoord')
+    nt.links.new(tc.outputs['UV'], tex.inputs['Vector'])
+    nt.links.new(tex.outputs['Color'], b.inputs['Base Color'])
+    nt.links.new(tex.outputs['Alpha'], b.inputs['Alpha'])
+    b.inputs['Roughness'].default_value = 0.62
+    b.inputs['Metallic'].default_value = 0.0
+    _DECAL_MATS[fname] = m
+    return m
+
+
+def decal_mesh(kind, fname):
+    """Quads just outside the cover faces (cover-local: origin at the top centre, sides hang down COV_H)."""
+    key = f"DecalMesh_{kind}_{fname}"
+    me = bpy.data.meshes.get(key)
+    if me:
+        return me
+    e, hw, hh = 0.0018, COV - 0.007, COV_H / 2 - 0.007
+    if kind == 'side':
+        quads = [((0, -COV - e, -COV_H / 2), (1, 0, 0), (0, 0, 1), hw, hh),
+                 ((0, COV + e, -COV_H / 2), (-1, 0, 0), (0, 0, 1), hw, hh)]
+    elif kind == 'end':
+        quads = [((-COV - e, 0, -COV_H / 2), (0, -1, 0), (0, 0, 1), hw, hh),
+                 ((COV + e, 0, -COV_H / 2), (0, 1, 0), (0, 0, 1), hw, hh)]
+    else:
+        quads = [((0, 0, e), (1, 0, 0), (0, 1, 0), hw, hw)]
+    verts, faces, uvs = [], [], []
+    for (c, r, u, a, b) in quads:
+        c, r, u = Vector(c), Vector(r), Vector(u)
+        i = len(verts)
+        for (sr, su) in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+            verts.append(tuple(c + r * (sr * a) + u * (su * b)))
+            uvs.append(((sr + 1) / 2, (su + 1) / 2))
+        faces.append((i, i + 1, i + 2, i + 3))
+    me = bpy.data.meshes.new(key)
+    me.from_pydata(verts, [], faces)
+    uvl = me.uv_layers.new(name="UVMap")
+    for li, loop in enumerate(me.loops):
+        uvl.data[li].uv = uvs[loop.vertex_index]
+    me.materials.append(decal_mat(fname))
+    return me
+
+
+def add_decals(cover, variant, sub):
+    obs = []
+    for kind, fname in (('side', f"label_side_{variant}.png"), ('end', f"label_end_{variant}.png"),
+                        ('top', "label_top.png")):
+        ob = bpy.data.objects.new(f"{cover.name}_Art{kind.title()}", decal_mesh(kind, fname))
+        link(ob, sub)
+        ob.parent = cover
+        ob.visible_shadow = False
+        obs.append(ob)
+    DECALS[cover.name] = obs
+    return obs
+
+
+def with_decals(obs):
+    out = []
+    for ob in obs:
+        out += [ob] + DECALS.get(ob.name, [])
+    return out
+
+
+def cover_object(name, R, sub, parent=None, loc=(0, 0, 0), sxy=1.0, variant=0):
+    ob = bpy.data.objects.new(name, cover_mesh(R))
+    link(ob, sub)
+    ob.parent = parent
+    ob.location = loc
+    ob.scale = (sxy, sxy, 1.0)
+    so = ob.modifiers.new("Sheet", 'SOLIDIFY')
+    so.thickness = COV_T
+    so.offset = -1.0
+    bv = ob.modifiers.new("Edges", 'BEVEL')
+    bv.width = 0.006
+    bv.segments = 2
+    bv.limit_method = 'ANGLE'
+    for p in ob.data.polygons:
+        p.use_smooth = False
+    add_decals(ob, variant, sub)
+    return ob
+
+
+def bead_mesh(R):
+    me = bpy.data.meshes.get("BeadMesh")
+    if me:
+        return me
+    L = 2 * COV + 0.02
+    bm = bmesh.new()
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=10, radius1=0.009, radius2=0.009, depth=L,
+                          matrix=Matrix.Translation((L / 2, 0, 0)) @ Matrix.Rotation(math.pi / 2, 4, 'Y'))
+    me = bpy.data.meshes.new("BeadMesh")
+    bm.to_mesh(me); bm.free()
+    for p in me.polygons:
+        p.use_smooth = True
+    me.materials.append(R['bead'])
+    return me
+
+
 def cube_parts(name, R, sub, parent):
+    """Idea cube on a steel base tray. The cover and the two weld beads are added by the line."""
     h = CUBE / 2
     parts = {}
-    parts['core'] = pbox(f"{name}_Core", -0.38, 0.38, -0.38, 0.38, 0.22, 0.98, R['idea_core'], sub, parent, 0.05)
-    parts['shell'] = pbox(f"{name}_Shell", -h, h, -h, h, 0.0, CUBE, R['idea_shell'], sub, parent, 0.04)
-    fr = []
-    t = 0.06
-    for sx in (-1, 1):
-        for sy in (-1, 1):
-            fr.append(pbox(f"{name}_PostE{sx}{sy}", sx * h - t if sx > 0 else -h, h if sx > 0 else -h + t,
-                           sy * h - t if sy > 0 else -h, h if sy > 0 else -h + t, 0, CUBE, R['frame'], sub, parent, 0.01))
-    for z0 in (0.0, CUBE - t):
-        for sy in (-1, 1):
-            fr.append(pbox(f"{name}_RailX{z0:.1f}{sy}", -h, h, sy * h - t if sy > 0 else -h, h if sy > 0 else -h + t, z0, z0 + t, R['frame'], sub, parent, 0.01))
-        for sx in (-1, 1):
-            fr.append(pbox(f"{name}_RailY{z0:.1f}{sx}", sx * h - t if sx > 0 else -h, h if sx > 0 else -h + t, -h, h, z0, z0 + t, R['frame'], sub, parent, 0.01))
-    parts['frame'] = fr
-    p = 0.03
-    parts['panels_a'] = [pbox(f"{name}_PanelS", -h + t, h - t, -h - 0.005, -h + p, t, CUBE - t, R['panel'], sub, parent, 0.005),
-                         pbox(f"{name}_PanelN", -h + t, h - t, h - p, h + 0.005, t, CUBE - t, R['panel'], sub, parent, 0.005)]
-    parts['panels_b'] = [pbox(f"{name}_PanelW", -h - 0.005, -h + p, -h + t, h - t, t, CUBE - t, R['panel'], sub, parent, 0.005),
-                         pbox(f"{name}_PanelE", h - p, h + 0.005, -h + t, h - t, t, CUBE - t, R['panel'], sub, parent, 0.005),
-                         pbox(f"{name}_PanelTop", -h + t, h - t, -h + t, h - t, CUBE - p, CUBE + 0.005, R['panel'], sub, parent, 0.005)]
-    parts['seam'] = [pbox(f"{name}_Seam{k}", -h - 0.008, h + 0.008, -h - 0.008, h + 0.008, z, z + 0.035, R['seam'], sub, parent, 0)
-                     for k, z in enumerate((0.42,))]
+    parts['tray'] = pbox(f"{name}_Tray", -COV - 0.025, COV + 0.025, -COV - 0.025, COV + 0.025, 0.0, TRAY,
+                         R['tray'], sub, parent, 0.008)
+    parts['core'] = pbox(f"{name}_Core", -0.38, 0.38, -0.38, 0.38, TRAY + 0.22, TRAY + 0.98, R['idea_core'], sub, parent, 0.05)
+    parts['shell'] = pbox(f"{name}_Shell", -h, h, -h, h, TRAY, TRAY + CUBE, R['idea_shell'], sub, parent, 0.04)
+    parts['cover'] = cover_object(f"{name}_Cover", R, sub, parent, (0, 0, TRAY + COV_H), variant=int(name[-2:]) % 3)
+    beads = []
+    for k, yy in enumerate((-COV - 0.007, COV + 0.007)):
+        ob = bpy.data.objects.new(f"{name}_Bead{'FB'[k]}", bead_mesh(R))
+        link(ob, sub)
+        ob.parent = parent
+        ob.location = (-COV - 0.01, yy, TRAY + 0.006)
+        beads.append(ob)
+    parts['beads'] = beads
     return parts
 
 
@@ -659,13 +900,34 @@ def key_visible(objs, frames_states):
             ob.keyframe_insert('hide_viewport', frame=f)
 
 
-def build_line_cubes(R, sub):
-    xs = [28.0 - PITCH * k for k in range(10 + NCYC + 1)]       # 28 .. -26 on the line, more queued behind the wall
-    weld_done = {sx: (CYCLE - 18) + stg for (sx, side, stg) in STATIONS}   # cycle frame when station's 2nd weld ends
+def key_bead(ob, f0, f1, cool=60):
+    """Grow the bead with the torch (f0..f1), then let it cool. f0 == 0: welded before the shot."""
+    if f0 == 0:
+        ob.scale = (1, 1, 1)
+        ob.color = (1.0, 1.0, 0, 1)
+        ob.keyframe_insert('color', frame=1)
+        return
+    ob.scale = (0.02, 1, 1)
+    ob.color = (0.0, 0.0, 0, 1)
+    ob.keyframe_insert('scale', frame=f0)
+    ob.keyframe_insert('color', frame=f0)
+    ob.scale = (1, 1, 1)
+    ob.color = (1.0, 0.0, 0, 1)
+    ob.keyframe_insert('scale', frame=f1)
+    ob.keyframe_insert('color', frame=f1)
+    ob.color = (1.0, 1.0, 0, 1)
+    ob.keyframe_insert('color', frame=f1 + cool)
+    for fc in fcurves_of(ob.animation_data.action):
+        for kp in fc.keyframe_points:
+            kp.interpolation = 'LINEAR'
+
+
+def build_line_cubes(R, sub, place_frames):
+    """place_frames[n] = frame the handling robot releases the cover onto the cube at station 1 in cycle n."""
+    xs = [28.0 - PITCH * k for k in range(10 + NCYC + 1)]       # 28 .. on the line, more queued in the intake tunnel
     for k, x0 in enumerate(xs):
         name = f"Cube{k:02d}"
         car = empty(name, None, (x0, -1.0, BELT_TOP), sub, 0.3)
-        # motion: indexed moves
         car.location = (x0, -1.0, BELT_TOP)
         car.keyframe_insert('location', frame=1)
         for n in range(NCYC):
@@ -675,49 +937,116 @@ def build_line_cubes(R, sub):
                 car.location = (a + (b - a) * smooth(t / MOVE), -1.0, BELT_TOP)
                 car.keyframe_insert('location', frame=f0 + t)
         parts = cube_parts(name, R, sub, car)
-        allp = [o for v in parts.values() for o in (v if isinstance(v, list) else [v])]
-        # stage times: completion frame of the weld at each station (or 0 if before the shot)
-        done = []
+        # cycle in which the cube arrives at each station (None = never in the shot, <0 = before the shot)
+        arr = []
         for (sx, side, stg) in STATIONS:
-            n = round((sx - x0) / PITCH) - 1
-            if (sx - x0) % PITCH != 0 or (sx - x0) < 0:
-                done.append(0 if sx < x0 else None)       # already past (before the shot) / never reaches
-                continue
-            done.append(0 if n < 0 else (1 + n * CYCLE + weld_done[sx]))
-        def st(i, default_hidden=True):
-            d = done[i]
-            if d is None:
-                return [(1, False)]
-            if d == 0:
-                return [(1, True)]
-            return [(1, False), (d, True)]
-        # whole cube hidden while inside the west wall or past the east end
-        win = []
-        prev = None
+            d = sx - x0
+            arr.append(round(d / PITCH) - 1)
+        # cover
+        n1 = arr[0]
+        if n1 < 0:
+            covered = [(1, True)]
+        elif n1 < NCYC:
+            covered = [(1, False), (place_frames[n1], True)]
+        else:
+            covered = [(1, False)]
+        # visibility window: inside the intake tunnel (from x -40) to the east end
+        win, prev = [], None
         for f in range(1, 1 + NCYC * CYCLE, 2):
             n = (f - 1) // CYCLE
             t = (f - 1) % CYCLE
             xx = x0 + PITCH * n + (PITCH * smooth(t / MOVE) if t <= MOVE else PITCH)
-            v = -30.5 < xx < 33.8
+            v = -40.0 < xx < 36.6          # hidden once inside the deployment building
             if v != prev:
                 win.append((f, v))
                 prev = v
-        s0 = st(0)
-        shell = [(f, not v) for (f, v) in s0]
-        key_visible(parts['frame'], merge(st(0), win))
-        key_visible(parts['panels_a'], merge(st(1), win))
-        key_visible(parts['panels_b'] + parts['seam'], merge(st(2), win))
-        key_visible([parts['shell']], merge(shell, win))
-        key_visible([parts['core']], win)
+        open_ = [(f, not v) for (f, v) in covered]
+        key_visible([parts['tray']], win)
+        key_visible(with_decals([parts['cover']]), merge(covered, win))
+        key_visible([parts['shell'], parts['core']], merge(open_, win))
+        # weld beads: front seam at station 2, back seam at station 3
+        for bead, si in zip(parts['beads'], (1, 2)):
+            n = arr[si]
+            stg = STATIONS[si][2]
+            if n < 0:
+                key_bead(bead, 0, 0)
+                key_visible([bead], win)
+            elif n < NCYC:
+                f0 = 1 + n * CYCLE + WELD_START + stg
+                key_bead(bead, f0, 1 + n * CYCLE + WELD_END + stg)
+                key_visible([bead], merge([(1, False), (f0, True)], win))
+            else:
+                key_visible([bead], [(1, False)])
         if car.animation_data:
             for fc in fcurves_of(car.animation_data.action):
                 for kp in fc.keyframe_points:
                     kp.interpolation = 'LINEAR'
-        for ob in allp:
+        for ob in [parts['tray'], parts['core'], parts['shell']] + with_decals([parts['cover']]) + parts['beads']:
             if ob.animation_data:
                 for fc in fcurves_of(ob.animation_data.action):
-                    for kp in fc.keyframe_points:
-                        kp.interpolation = 'CONSTANT'
+                    if fc.data_path in ('hide_render', 'hide_viewport'):
+                        for kp in fc.keyframe_points:
+                            kp.interpolation = 'CONSTANT'
+
+
+def cover_station(tag, x, J, events, R, M, sub):
+    """Stand with a nested stack of covers behind the handling robot, plus the cover it carries."""
+    sy = STACK_Y
+    pbox(f"{tag}_StandTop", x - 0.8, x + 0.8, sy - 0.8, sy + 0.8, STACK_Z0 - 0.06, STACK_Z0, R['dark'], sub, None, 0.01)
+    for (lx, ly) in ((-0.7, -0.7), (0.7, -0.7), (0.7, 0.7), (-0.7, 0.7)):
+        pbox(f"{tag}_StandLeg{lx}{ly}", x + lx - 0.05, x + lx + 0.05, sy + ly - 0.05, sy + ly + 0.05, F, STACK_Z0 - 0.06,
+             R['dark'], sub, None, 0.005)
+    for zz in (F + 0.3,):
+        pbox(f"{tag}_StandBrace", x - 0.7, x + 0.7, sy - 0.75, sy + 0.75, zz, zz + 0.05, R['dark'], sub, None, 0.005)
+    stack = []
+    for i in range(STACK_N):
+        z = STACK_Z0 + COV_H + i * STACK_STEP
+        # the cover taken in cycle n (index STACK_N-1-n) ends up on Cube(9+n): give it that cube's artwork.
+        # Stack covers sit turned 180 deg: the robot's half-turn swing brings the artwork round the right way.
+        ob = cover_object(f"{tag}_Stack{i:02d}", R, sub, None, (x, sy, z), 1.0 + (STACK_N - 1 - i) * 0.006,
+                          variant=(9 + STACK_N - 1 - i) % 3)
+        ob.rotation_euler = (0, 0, math.pi)
+        stack.append(ob)
+    # cover n is taken from the top: index STACK_N-1-n at its pick frame
+    for n, (fp, fl) in enumerate(events):
+        idx = STACK_N - 1 - n
+        if idx >= 0:
+            key_visible(with_decals([stack[idx]]), [(1, True), (fp, False)])
+    # carried cover rides on the gripper; relative transform taken at the first pick
+    scn = bpy.context.scene
+    scn.frame_set(events[0][0])
+    bpy.context.view_layer.update()
+    tip = J['tip']
+    want = Matrix.Translation(stack[STACK_N - 1].location) @ Matrix.Rotation(math.pi, 4, 'Z')
+    rel = tip.matrix_world.inverted() @ want
+    carried_all = []
+    for v in range(3):           # one carried cover per artwork variant, shown in the cycles that use it
+        cv = cover_object(f"{tag}_CarriedCover{v}", R, sub, None, (0, 0, 0), variant=v)
+        cv.parent = tip
+        cv.matrix_parent_inverse = Matrix.Identity(4)
+        cv.matrix_basis = rel
+        states = [(1, False)]
+        for n, (fp, fl) in enumerate(events):
+            if (9 + n) % 3 == v:
+                states += [(fp, True), (fl, False)]
+        key_visible(with_decals([cv]), states)
+        carried_all.append(cv)
+    carried = carried_all[0]
+    for ob in with_decals(stack + carried_all):
+        if ob.animation_data:
+            for fc in fcurves_of(ob.animation_data.action):
+                for kp in fc.keyframe_points:
+                    kp.interpolation = 'CONSTANT'
+    # precision check: where the carried cover is at each pick / place vs where the stack / cube cover is
+    err = 0.0
+    for n, (fp, fl) in enumerate(events):
+        carried = carried_all[(9 + n) % 3]
+        for f, target in ((fp, Vector((x, sy, stack_top(n)))), (fl - 1, Vector((x, -1.0, BELT_TOP + TRAY + COV_H)))):
+            scn.frame_set(f)
+            bpy.context.view_layer.update()
+            err = max(err, (carried.matrix_world.translation - target).length)
+    scn.frame_set(1)
+    return err
 
 
 def roller_conveyor(R, M, sub):
@@ -730,8 +1059,8 @@ def roller_conveyor(R, M, sub):
     for p in me.polygons:
         p.use_smooth = True
     me.materials.append(R['steel'])
-    x = -27.4
-    while x < 33.4:
+    x = -40.0
+    while x < 37.4:
         ob = bpy.data.objects.new(f"Roller{x:.1f}", me)
         ob.location = (x, -1.0, BELT_TOP - 0.055)
         link(ob, sub)
@@ -844,15 +1173,15 @@ def overhead(R, M, sub):
         tube(f"DuctDrop{xx}", (xx, 2.8, 9.15), (xx, 2.8, 8.2), 0.18, 0.12, M['galv'], sub, 16)
     # zone signs 01-06 hanging over the line (periwinkle accent numerals are emissive tiles)
     for i, xx in enumerate((-24, -14, -4, 6, 15, 23)):
-        pbox(f"ZoneSign{i}", xx - 0.9, xx + 0.9, -1.05, -0.95, 7.6, 8.3, R['dark'], sub, None, 0.01)
-        pbox(f"ZoneSignBar{i}", xx - 0.75, xx - 0.45, -1.11, -1.05, 7.75, 8.15, R['seam'], sub, None, 0)
-        beam(f"ZoneSignWireA{i}", (xx - 0.7, -1.0, 8.3), (xx - 0.7, -1.0, 9.5), 0.01, 0.01, M['steel'], sub, bevel=0)
-        beam(f"ZoneSignWireB{i}", (xx + 0.7, -1.0, 8.3), (xx + 0.7, -1.0, 9.5), 0.01, 0.01, M['steel'], sub, bevel=0)
+        pbox(f"ZoneSign{i}", xx - 0.9, xx + 0.9, -1.05, -0.95, 8.5, 9.2, R['dark'], sub, None, 0.01)
+        pbox(f"ZoneSignBar{i}", xx - 0.75, xx - 0.45, -1.11, -1.05, 8.65, 9.05, R['seam'], sub, None, 0)
+        beam(f"ZoneSignWireA{i}", (xx - 0.7, -1.0, 9.2), (xx - 0.7, -1.0, 9.9), 0.01, 0.01, M['steel'], sub, bevel=0)
+        beam(f"ZoneSignWireB{i}", (xx + 0.7, -1.0, 9.2), (xx + 0.7, -1.0, 9.9), 0.01, 0.01, M['steel'], sub, bevel=0)
 
 
 def floor_clutter(R, M, sub, rnd):
     """Gas cylinders, wire drums and hoses at each cell; parts bins."""
-    for (x, side, stg) in STATIONS:
+    for (x, side, stg) in STATIONS[1:]:          # welding cells only (station 1 handles covers)
         y0 = 3.6 if side > 0 else -5.5
         for k in range(3):
             xx = x + 1.6 + k * 0.32
@@ -921,6 +1250,160 @@ def sun_shafts(sub, az_deg=338.0, elev_deg=13.0, energy=7000):
         link(ob, sub)
 
 
+def laser_mat():
+    """Laser fan seen in dusty air: mostly transparent, faint red glow."""
+    m = bpy.data.materials.get("LaserSheet")
+    if m:
+        bpy.data.materials.remove(m)
+    m = bpy.data.materials.new("LaserSheet")
+    m.use_nodes = True
+    nt = m.node_tree
+    for n in list(nt.nodes):
+        nt.nodes.remove(n)
+    out = nt.nodes.new('ShaderNodeOutputMaterial')
+    em = nt.nodes.new('ShaderNodeEmission')
+    em.inputs['Color'].default_value = (1.0, 0.03, 0.02, 1)
+    em.inputs['Strength'].default_value = 0.22
+    tr = nt.nodes.new('ShaderNodeBsdfTransparent')
+    mx = nt.nodes.new('ShaderNodeAddShader')
+    nt.links.new(tr.outputs[0], mx.inputs[0])
+    nt.links.new(em.outputs[0], mx.inputs[1])
+    nt.links.new(mx.outputs[0], out.inputs['Surface'])
+    return m
+
+
+def quad(name, verts, mat, sub, parent):
+    me = bpy.data.meshes.new(name)
+    me.from_pydata(verts, [], [list(range(len(verts)))])
+    me.materials.append(mat)
+    ob = bpy.data.objects.new(name, me)
+    link(ob, sub)
+    ob.parent = parent
+    ob.visible_shadow = False
+    return ob
+
+
+def inspection_fx(R, M, sub, gates):
+    """Gate 1: laser scanner heads ride up and down the posts and sweep red lines over the resting package.
+    Gate 2: three inspection cameras fire a burst of flashes, then the gate's stack light turns from amber to green."""
+    g1, g2 = gates
+    ya_in, yb_in = 0.6, -2.6                    # inner faces of the back (A) and front (B) posts
+    yf_back, yf_front = -1.0 + COV + 0.003, -1.0 - COV - 0.003
+    z_top = BELT_TOP + TRAY + COV_H + 0.12
+    z_bot = BELT_TOP + TRAY + 0.08
+    red_line = emit("LaserLine", (1.0, 0.02, 0.01), 90)
+    sheet = laser_mat()
+    lasers, lights = [], []
+    for side, (y_post, y_face, sgn) in (('A', (ya_in, yf_back, -1)), ('B', (yb_in, yf_front, +1))):
+        car = empty(f"Scanner{side}", None, (g1, y_post + sgn * 0.08, z_top), sub, 0.1)
+        pbox(f"ScannerHead{side}", -0.16, 0.16, -0.08, 0.08, -0.07, 0.07, R['dark'], sub, car, 0.015)
+        pbox(f"ScannerWindow{side}", -0.1, 0.1, sgn * 0.08 - 0.004, sgn * 0.08 + 0.004, -0.025, 0.025,
+             emit(f"ScannerWin{side}", (1.0, 0.05, 0.03), 8), sub, car, 0)
+        dy = y_face - (y_post + sgn * 0.08)
+        fan = quad(f"LaserFan{side}", [(0, sgn * 0.08, 0), (-COV - 0.01, dy, 0), (COV + 0.01, dy, 0)], sheet, sub, car)
+        line = pbox(f"LaserLine{side}", -COV, COV, dy - 0.002, dy + 0.002, -0.006, 0.006, red_line, sub, car, 0)
+        for k, dz in enumerate((-0.07, 0.07)):           # the head projects three parallel lines
+            lasers.append(pbox(f"LaserLine{side}{k}", -COV, COV, dy - 0.002, dy + 0.002, dz - 0.004, dz + 0.004,
+                               red_line, sub, car, 0))
+        lt = bpy.data.lights.new(f"LaserGlow{side}", 'POINT')
+        lt.color = (1.0, 0.05, 0.03)
+        lt.shadow_soft_size = 0.05
+        lo = bpy.data.objects.new(f"LaserGlow{side}", lt)
+        link(lo, sub)
+        lo.parent = car
+        lo.location = (0, dy * 0.85, 0)
+        lasers += [fan, line]
+        lights.append(lt)
+        # rail the head rides on
+        pbox(f"ScannerRail{side}", g1 - 0.05, g1 + 0.05, min(y_post, y_post + sgn * 0.03), max(y_post, y_post + sgn * 0.03),
+             F + 0.5, 6.7, R['steel'], sub, None, 0.005)
+        for n in range(NCYC):
+            c = 1 + n * CYCLE
+            for f, z in ((c, z_top), (c + 31, z_top), (c + 55, z_bot), (c + 79, z_top)):
+                car.location.z = z
+                car.keyframe_insert('location', index=2, frame=f)
+    vis = [(1, False)]
+    for n in range(NCYC):
+        c = 1 + n * CYCLE
+        vis += [(c + 31, True), (c + 81, False)]
+    # top head on the beam sweeps a line across the lid, along the line direction
+    zt = BELT_TOP + TRAY + COV_H + 0.003
+    topc = empty("ScannerTop", None, (g1 - COV, -1.0, 6.72), sub, 0.1)
+    pbox("ScannerTopHead", -0.08, 0.08, -0.3, 0.3, -0.08, 0.04, R['dark'], sub, topc, 0.015)
+    pbox("ScannerTopWindow", -0.03, 0.03, -0.24, 0.24, -0.084, -0.08, emit("ScannerTopWin", (1.0, 0.05, 0.03), 8), sub, topc, 0)
+    dzt = zt - 6.72
+    lasers.append(quad("LaserFanTop", [(0, 0, -0.08), (0, -COV - 0.01, dzt), (0, COV + 0.01, dzt)], sheet, sub, topc))
+    for k, dx in enumerate((-0.06, 0.0, 0.06)):
+        lasers.append(pbox(f"LaserLineTop{k}", dx - 0.004, dx + 0.004, -COV, COV, dzt, dzt + 0.003, red_line, sub, topc, 0))
+    pbox("ScannerTopRail", g1 - 0.75, g1 + 0.75, -1.1, -0.9, 6.76, 6.8, R['steel'], sub, None, 0.005)
+    for n in range(NCYC):
+        c = 1 + n * CYCLE
+        for f, xx in ((c, g1 - COV), (c + 31, g1 - COV), (c + 55, g1 + COV), (c + 79, g1 - COV)):
+            topc.location.x = xx
+            topc.keyframe_insert('location', index=0, frame=f)
+    key_visible(lasers, vis)
+    for lt in lights:
+        for n in range(NCYC):
+            c = 1 + n * CYCLE
+            for f, e in ((c + 30, 0), (c + 31, 25), (c + 81, 25), (c + 82, 0)):
+                lt.energy = e
+                lt.keyframe_insert('energy', frame=f)
+    # gate 2: inspection cameras with ring flashes
+    heads = [((g2, -1.0, 6.75), (0, 0, 0)),                                   # on the beam, looking down
+             ((g2, ya_in - 0.12, 5.2), (math.radians(-90), 0, 0)),           # back post, looking at the back face
+             ((g2, yb_in + 0.12, 5.2), (math.radians(90), 0, 0))]            # front post, looking at the front face
+    ring_mat = emit("FlashRing", (1.0, 0.97, 0.92), 300)
+    rings, flashes = [], []
+    for k, (loc, rot) in enumerate(heads):
+        h = empty(f"InspCam{k}", None, loc, sub, 0.1)
+        h.rotation_euler = rot
+        pbox(f"InspCamBody{k}", -0.14, 0.14, -0.1, 0.1, -0.05, 0.22, R['dark'], sub, h, 0.02)
+        tube(f"InspCamLens{k}", (0, 0, -0.05), (0, 0, -0.14), 0.07, 0.06, R['hose'], sub, 24, h)
+        rings.append(tube(f"InspCamRing{k}", (0, 0, -0.06), (0, 0, -0.08), 0.13, 0.13, ring_mat, sub, 24, h))
+        ld = bpy.data.lights.new(f"InspFlash{k}", 'AREA')
+        ld.size = 0.25
+        ld.color = (1.0, 0.97, 0.92)
+        lo = bpy.data.objects.new(f"InspFlash{k}", ld)
+        link(lo, sub)
+        lo.parent = h
+        lo.location = (0, 0, -0.1)
+        flashes.append(ld)
+    shots = [66, 72, 78]
+    rvis = [(1, False)]
+    for n in range(NCYC):
+        c = 1 + n * CYCLE
+        for t in shots:
+            rvis += [(c + t, True), (c + t + 2, False)]
+            for ld in flashes:
+                for f, e in ((c + t - 1, 0), (c + t, 7000), (c + t + 1, 1500), (c + t + 2, 0)):
+                    ld.energy = e
+                    ld.keyframe_insert('energy', frame=f)
+    key_visible(rings, rvis)
+    for ld in flashes:
+        for fc in fcurves_of(ld.animation_data.action):
+            for kp in fc.keyframe_points:
+                kp.interpolation = 'CONSTANT'
+    # stack light on the front post: amber while inspecting, green once passed
+    sx, sy = g2 + 0.35, -3.2
+    pbox("InspStackPole", sx - 0.03, sx + 0.03, sy - 0.03, sy + 0.03, 6.8, 7.6, R['dark'], sub, None, 0.005)
+    amber = tube("InspStackAmber", (sx, sy, 7.6), (sx, sy, 7.75), 0.07, 0.07, emit("StackAmberOn", (1.0, 0.45, 0.03), 18), sub, 16)
+    green = tube("InspStackGreen", (sx, sy, 7.77), (sx, sy, 7.92), 0.07, 0.07, R['stack_g'], sub, 16)
+    tube("InspStackAmberOff", (sx, sy, 7.6), (sx, sy, 7.75), 0.069, 0.069, R['stack_a'], sub, 16)
+    tube("InspStackGreenOff", (sx, sy, 7.77), (sx, sy, 7.92), 0.069, 0.069, plain("StackGreenOff", (0.02, 0.12, 0.04), 0.0, 0.2), sub, 16)
+    av, gv = [(1, False)], [(1, False)]
+    for n in range(NCYC):
+        c = 1 + n * CYCLE
+        av += [(c + 32, True), (c + 82, False)]
+        gv += [(c + 82, True), (c + CYCLE + 20, False)]
+    key_visible([amber], av)
+    key_visible([green], gv)
+    for ob in lasers + rings + [amber, green]:
+        if ob.animation_data:
+            for fc in fcurves_of(ob.animation_data.action):
+                for kp in fc.keyframe_points:
+                    kp.interpolation = 'CONSTANT'
+
+
 def build_interior(M):
     S = "Interior"
     rnd = random.Random(21)
@@ -928,6 +1411,10 @@ def build_interior(M):
     scn.render.fps = FPS
     scn.frame_start = 1
     scn.frame_end = 600
+    DECALS.clear()
+    _DECAL_MATS.clear()
+    for me in [m for m in bpy.data.meshes if m.name.startswith("DecalMesh_")]:
+        bpy.data.meshes.remove(me)
     R = robot_materials(M)
     # floor
     fl = bpy.data.objects.get("HallFloor")
@@ -936,14 +1423,25 @@ def build_interior(M):
         fl.data.materials.append(floor_mat())
     roller_conveyor(R, M, S)
     spark = spark_object(R, S)
+    place_frames, grip_err = [], None
     for i, (x, side, stg) in enumerate(STATIONS):
         tag = f"Robot{i + 1}"
-        J = make_robot(tag, x, side, R, S)
-        dress_pack(tag, J, R, S)
-        welds = animate_robot(J, x, side, stg, R, S, tag)
-        weld_fx(tag, J, welds, R, S, spark)
-        robot_cell(tag, x, side, R, M, S)
-    build_line_cubes(R, S)
+        if i == 0:
+            J = make_robot(tag, x, side, R, S, y=GRIP_Y, z=GRIP_Z, tool='gripper')
+            dress_pack(tag, J, R, S)
+            events = animate_gripper(J, x, NCYC)
+            grip_err = cover_station(tag, x, J, events, R, M, S)
+            place_frames = [fl for (fp, fl) in events]
+            robot_cell(tag, x, side, R, M, S, z=GRIP_Z, yr=(GRIP_Y - 0.8, GRIP_Y + 0.8))
+        else:
+            J = make_robot(tag, x, side, R, S)
+            dress_pack(tag, J, R, S)
+            welds = animate_robot(J, x, side, stg, R, S, tag)
+            weld_fx(tag, J, welds, R, S, spark)
+            robot_cell(tag, x, side, R, M, S)
+    build_line_cubes(R, S, place_frames)
+    inspection_fx(R, M, S, GATES)
+    bpy.app.driver_namespace['grip_err'] = grip_err
     hall_haze(S)
     for lo in bpy.data.objects:
         if lo.name.startswith("HallLight") and lo.type == 'LIGHT':

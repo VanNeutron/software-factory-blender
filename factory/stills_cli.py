@@ -2,7 +2,8 @@
 json: outdir, frames [list], samples, pct, blur. Steps the scene through every frame in order so particle
 sims are valid, and renders only the listed frames."""
 import bpy, sys, json, time, os
-a = json.loads(sys.argv[sys.argv.index('--') + 1])
+_x = sys.argv[sys.argv.index("--") + 1]
+a = json.load(open(_x)) if _x.endswith(".json") else json.loads(_x)
 scn = bpy.context.scene
 prefs = bpy.context.preferences.addons['cycles'].preferences
 DEV = None

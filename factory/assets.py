@@ -7,7 +7,14 @@ so no UV unwrapping is needed: every scene object is built at the world origin.
 import bpy, math, os, glob, random
 from mathutils import Vector
 
-ROOT = os.path.normpath(os.path.join(os.environ.get('FACTORY_DIR') or (os.path.dirname(bpy.data.filepath) if bpy.data.filepath else os.getcwd()), '..', 'assets', 'polyhaven'))
+_BASE = os.path.normpath(os.path.join(os.environ.get('FACTORY_DIR') or (os.path.dirname(bpy.data.filepath) if bpy.data.filepath else os.getcwd()), '..', 'assets'))
+# High-resolution set (tools/fetch_hires.py: 4K surfaces, 2K props/plants, 16K/8K sky) is used when present.
+# Set FACTORY_ASSETS=std to force the original set (2K / 1K / 4K sky); FACTORY_SKY=8k|16k picks the sky.
+HI = os.path.isdir(os.path.join(_BASE, 'polyhaven_hi', 'textures')) and os.environ.get('FACTORY_ASSETS', 'hi') != 'std'
+ROOT = os.path.join(_BASE, 'polyhaven_hi' if HI else 'polyhaven')
+TEX_RES = '4k' if HI else '2k'
+SKY_DIR = ('hdri_' + os.environ.get('FACTORY_SKY', '16k')) if HI else 'hdri'
+print("ASSETS", "hi" if HI else "std", TEX_RES, SKY_DIR)
 # real-world tile size (m) of each texture, from the Poly Haven API
 DIM = {'asphalt_02': 3.0, 'tarred_gravel': 2.2, 'concrete_floor_worn_001': 3.0, 'dirty_concrete': 3.0,
        'worn_corrugated_iron': 1.8, 'rusty_corrugated_iron': 2.0, 'corrugated_iron_02': 2.7, 'container_side': 1.94,
@@ -23,7 +30,7 @@ def have_assets():
 # --------------------------------------------------------------------------
 
 def _f(t, kind):
-    hits = glob.glob(os.path.join(ROOT, 'textures', t, f'{t}_{kind}_2k.*'))
+    hits = glob.glob(os.path.join(ROOT, 'textures', t, f'{t}_{kind}_{TEX_RES}.*'))
     return hits[0] if hits else None
 
 
@@ -348,7 +355,7 @@ def hdri_world(target_az_deg=338.0, strength=1.0):
     """Use the Belfast sunset sky. Rotates it so its sun sits at target azimuth (deg, from +Y toward +X).
     Returns (sun_elevation_deg, sun_azimuth_deg)."""
     import numpy as np
-    p = glob.glob(os.path.join(ROOT, 'hdri', '*.exr'))[0]
+    p = glob.glob(os.path.join(ROOT, SKY_DIR, '*.exr'))[0]
     im = bpy.data.images.load(p, check_existing=True)
     w, h = im.size
     px = np.empty(w * h * 4, dtype=np.float32)
@@ -387,6 +394,27 @@ def hdri_world(target_az_deg=338.0, strength=1.0):
 # --------------------------------------------------------------------------
 # asset libraries: append each Poly Haven blend into its own excluded collection
 # --------------------------------------------------------------------------
+
+def upgrade_model_textures():
+    """Point the 1K textures of the imported Poly Haven models at the 2K files of the high-res set (same
+    meshes and UVs, so the images are swapped in place). Returns (swapped, missing)."""
+    if not HI:
+        return (0, 0)
+    n = miss = 0
+    for im in bpy.data.images:
+        fp = im.filepath.replace('\\', '/')
+        if '/polyhaven/models/' not in fp or '_1k.' not in fp:
+            continue
+        rel = fp.split('/polyhaven/models/', 1)[1].replace('_1k.', '_2k.')
+        new = os.path.join(ROOT, 'models', *rel.split('/'))
+        if os.path.exists(new):
+            im.filepath = new
+            im.reload()
+            n += 1
+        else:
+            miss += 1
+            print("NO_2K", rel)
+    return (n, miss)
 
 def load_asset(name):
     cname = f"PH_{name}"

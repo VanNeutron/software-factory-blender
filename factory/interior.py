@@ -8,13 +8,13 @@ plain, glass, A, F, ...). Entry point: build_interior(M).
 Timing: 24 fps, one line cycle = 96 frames (4 s). Frames 0-30 the line indexes 6 m;
 frames 30-96 the cubes rest and every robot welds the cube at its station.
 """
-import bpy, bmesh, math, random
+import bpy, bmesh, math, random, os
 from mathutils import Vector, Matrix, Euler
 
 FPS = 24
 CYCLE = 96
 MOVE = 30
-NCYC = 11                     # 11 cycles = 1056 frames (film runs frames 73-936)
+NCYC = 14                     # 14 cycles = 1344 frames (film v2 runs frames 25-1296)
 PITCH = 6.0
 CUBE = 1.2
 BELT_TOP = 3.52
@@ -615,8 +615,11 @@ def weld_fx(tag, J, welds, R, sub, spark_obj):
         lt.energy = 0
         lt.keyframe_insert('energy', frame=f0 - 1)
         arc_states += [(f0, True), (f1 + 1, False)]
+        e = 900.0
         for f in range(f0, f1 + 1):
-            lt.energy = rnd.uniform(600, 2200)
+            # smoothed flicker in a narrow band: 600-2200 W of white noise strobed the whole hall in wide shots
+            e = 0.65 * e + 0.35 * rnd.uniform(650, 1150)
+            lt.energy = e * min(1.0, (f - f0 + 1) / 4.0)       # strike over 4 frames: a one-frame on-switch popped
             lt.keyframe_insert('energy', frame=f)
             s = rnd.uniform(0.7, 1.4)
             arc.scale = (s, s, s)
@@ -1198,7 +1201,7 @@ def floor_clutter(R, M, sub, rnd):
         A['place'](bins[0], (x, y, F), rnd.uniform(-0.2, 0.2), 1.0, sub_coll(sub))
 
 
-def hall_haze(sub, density=0.0028):
+def hall_haze(sub, density=0.0009):    # v1 was 0.0028; halved twice so the line reads crisp from the windows
     """Dusty air inside the hall: a volume box just inside the walls. Overlaps (adds to) the site haze."""
     m = bpy.data.materials.get("HallHaze")
     if m:
@@ -1227,7 +1230,7 @@ def hall_haze(sub, density=0.0028):
     return ob
 
 
-def sun_shafts(sub, az_deg=338.0, elev_deg=13.0, energy=7000):
+def sun_shafts(sub, az_deg=338.0, elev_deg=13.0, energy=4200):   # was 7000: the beams washed the hall orange
     """Low sunset light raking through the back (+Y) window band. The real sun is hidden by the tree line at
     2 degrees, so these hidden area lights stand in for it (classic film cheat), aimed along the sun's azimuth."""
     r, e = math.radians(az_deg), math.radians(elev_deg)
@@ -1248,6 +1251,25 @@ def sun_shafts(sub, az_deg=338.0, elev_deg=13.0, energy=7000):
         ob.visible_camera = False
         ob.visible_glossy = False
         link(ob, sub)
+
+
+def shaft_linking(names=("Slab", "SlabPlate", "YardPad")):
+    """Keep the fake sunset shaft lights off the outdoor slabs: their beam left through the east door and drew
+    a lone orange streak on the concrete (the real sun is below the tree line outside)."""
+    c = bpy.data.collections.get("ShaftExclude") or bpy.data.collections.new("ShaftExclude")
+    for nm in names:
+        ob = bpy.data.objects.get(nm)
+        if ob and ob.name not in c.objects:
+            c.objects.link(ob)
+    for co in c.collection_objects:
+        co.light_linking.link_state = 'EXCLUDE'
+    n = 0
+    for ob in bpy.data.objects:
+        if ob.type == 'LIGHT' and ob.name.startswith("SunShaft"):
+            ob.light_linking.receiver_collection = c
+            n += 1
+    print("SHAFT_LINK lights", n, "excluded", [o.name for o in c.objects])
+    return n
 
 
 def laser_mat():
@@ -1362,6 +1384,7 @@ def inspection_fx(R, M, sub, gates):
         rings.append(tube(f"InspCamRing{k}", (0, 0, -0.06), (0, 0, -0.08), 0.13, 0.13, ring_mat, sub, 24, h))
         ld = bpy.data.lights.new(f"InspFlash{k}", 'AREA')
         ld.size = 0.25
+        ld.spread = math.radians(50)      # narrow beam on the package: a bare 7000 W area light flashed the whole hall
         ld.color = (1.0, 0.97, 0.92)
         lo = bpy.data.objects.new(f"InspFlash{k}", ld)
         link(lo, sub)
@@ -1369,13 +1392,14 @@ def inspection_fx(R, M, sub, gates):
         lo.location = (0, 0, -0.1)
         flashes.append(ld)
     shots = [66, 72, 78]
+    FLASH_W = 900
     rvis = [(1, False)]
     for n in range(NCYC):
         c = 1 + n * CYCLE
         for t in shots:
             rvis += [(c + t, True), (c + t + 2, False)]
             for ld in flashes:
-                for f, e in ((c + t - 1, 0), (c + t, 7000), (c + t + 1, 1500), (c + t + 2, 0)):
+                for f, e in ((c + t - 1, 0), (c + t, FLASH_W), (c + t + 1, FLASH_W * 0.2), (c + t + 2, 0)):
                     ld.energy = e
                     ld.keyframe_insert('energy', frame=f)
     key_visible(rings, rvis)
@@ -1448,6 +1472,13 @@ def build_interior(M):
             lo.data.spread = math.radians(70)
             lo.data.energy = 2800
     sun_shafts(S)
+    shaft_linking()
+    # painted lining inside the hall walls + overhead light colour (owner picked 'white' from a 4-way comparison)
+    _lp = os.path.join(os.path.dirname(__file__), 'liner.py')
+    if os.path.exists(_lp):
+        _ln = {'__name__': 'factory_liner'}
+        exec(compile(open(_lp).read(), _lp, 'exec'), _ln)
+        _ln['apply'](os.environ.get('FACTORY_LINER', 'white'))
     load_pallets(R, M, S, rnd)
     overhead(R, M, S)
     floor_clutter(R, M, S, rnd)

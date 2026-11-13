@@ -757,7 +757,7 @@ def roll_door(tag, xw, sgn, M, S):
     bar.location = (0, 0, 3.63)
     cyl(f"{tag}DoorBeacon", xw + sgn * 0.22, 0.55, 5.35, 5.6, 0.09, 0.08, M['lamp_warm'], S, 16)
     bl = light(f"{tag}DoorBeaconLight", 'POINT', (xw + sgn * 0.32, 0.55, 5.5), 0, (1.0, 0.55, 0.08), size=0.05)
-    for n in range(0, 12):
+    for n in range(0, 15):
         c = 1 + n * 96
         for f, sz in ((c - 10, 1.0), (c + 2, 0.03), (c + 24, 0.03), (c + 36, 1.0)):
             if f < 1:
@@ -902,7 +902,7 @@ def build_deploy(M, S):
     box("DeployStatusLed", xw - 0.14, xw - 0.12, -1.95, -0.05, 5.98, 6.07, M['led_green'], S, 0)
     sl = light("DeployStatusLight", 'AREA', (xw - 0.4, -1.0, 6.02), 2, GREEN, size=1.9, size_y=0.1,
                rot=(0, math.radians(90), 0))
-    for n in range(0, 12):
+    for n in range(0, 15):
         c = 1 + n * 96
         for f, e in ((c + 8, 2), (c + 10, 80), (c + 14, 10), (c + 18, 80), (c + 22, 10), (c + 26, 80), (c + 34, 2)):
             sl.data.energy = e
@@ -911,7 +911,27 @@ def build_deploy(M, S):
     sign_text("DeploySign", "OPERATIONS", (39.9, ya - 0.02, 7.45), 0.85, M, S, halo=GREEN,
               face=(0.82, 0.83, 0.8), plate=(37.2, 42.6, 7.2, 8.4))
     ops_board(M, S, 43.6, 49.6, 5.65, 9.0 - 0.05, ya)
+    yard_floods(M, S)
     return True
+
+
+def yard_floods(M, S):
+    """Warm wall-pack floodlights over the gap between the hall's east door and the deployment door, so the
+    package and the conveyor read after the bright hall (the yard was near black at dusk)."""
+    from mathutils import Vector
+    packs = [("YardFloodA", (26.08, -6.6, 8.3), +1, (31.0, -1.5, 3.0), 1400),      # hall east wall, south of the door
+             ("YardFloodB", (26.08, 4.4, 8.3), +1, (31.0, -0.5, 3.0), 900),       # hall east wall, north of the door
+             ("YardFloodC", (34.92, -2.9, 8.0), -1, (31.5, -1.0, 3.0), 1100)]     # deployment building west wall
+    for name, (x, y, z), sgn, tgt, watts in packs:
+        box(name + "Body", min(x, x + sgn * 0.22), max(x, x + sgn * 0.22), y - 0.22, y + 0.22, z - 0.12, z + 0.14, M['steel'], S, 0.01)
+        box(name + "Lens", min(x + sgn * 0.22, x + sgn * 0.235), max(x + sgn * 0.22, x + sgn * 0.235), y - 0.18, y + 0.18, z - 0.09, z + 0.08,
+            M['lamp_warm'], S, 0)
+        loc = Vector((x + sgn * 0.3, y, z - 0.05))
+        rot = (Vector(tgt) - loc).to_track_quat('-Z', 'Y').to_euler()
+        light(name, 'SPOT', tuple(loc), watts, (1.0, 0.76, 0.5), size=0.12, rot=tuple(rot), spot=math.radians(105))
+    # door wash: a strip over the deployment door that picks out the waiting package
+    light("DeployDoorWash", 'AREA', (34.55, -1.0, 5.75), 220, (1.0, 0.8, 0.58), size=1.8, size_y=0.25,
+          rot=(0, math.radians(-25), 0))
 
 
 def ops_board(M, S, x0, x1, z0, z1, wall_y):
@@ -941,7 +961,7 @@ def ops_board(M, S, x0, x1, z0, z1, wall_y):
         ob.location = (0, 0, zb)
         ph, f1, f2 = rnd.uniform(0, 6.28), rnd.uniform(0.04, 0.09), rnd.uniform(0.11, 0.2)
         base = rnd.uniform(0.35, 0.6)
-        for f in range(1, 1060, 6):
+        for f in range(1, 1350, 6):
             h = base + 0.22 * math.sin(f * f1 + ph) + 0.12 * math.sin(f * f2 + ph * 1.7) + rnd.uniform(-0.08, 0.08)
             ob.scale = (1, 1, max(0.06, min(1.0, h)))
             ob.keyframe_insert('scale', frame=f)
@@ -970,7 +990,7 @@ def ops_board(M, S, x0, x1, z0, z1, wall_y):
             if ax <= xq <= bx_:
                 return az + (bz - az) * (xq - ax) / max(1e-6, bx_ - ax)
         return zp
-    for f in range(1, 1060, 2):
+    for f in range(1, 1350, 2):
         u = ((f - 1) % 48) / 48
         xq = pts[0][0] + u * (pts[-1][0] - pts[0][0])
         head.location = (xq, gy - 0.03, at(xq))
@@ -1029,14 +1049,17 @@ def sign_text(name, text, base, height, M, S, halo=ACCENT, face=(0.85, 0.85, 0.8
         mo.rotation_euler = (math.radians(90), 0, 0)
         mo.location = (x, y - off, z)
         return link(mo, S)
-    letters(name + "Letters", 0.14, mf, ms, 0.15)
+    let_ob = letters(name + "Letters", 0.14, mf, ms, 0.15)
     halo_ob = letters(name + "Halo", 0.01, mh, mh, 0.03)
+    lx_min = x + min(v.co.x for v in let_ob.data.vertices)      # rotation is about X only: local x = world x
+    lx_max = x + max(v.co.x for v in let_ob.data.vertices)
     halo_ob.visible_camera = False                     # only its light on the wall shows
     if plate:
         x0, x1, z0, z1 = plate
         box(name + "Rail", x0, x1, y - 0.03, y, z0 + 0.1, z0 + 0.16, M['steel'], S, 0.005)
     for k in range(lamps):
-        lx = x - (lamps - 1) / 2 * (height * 2.6) + k * height * 2.6
+        # spread the lamps evenly over the real text width (fixed spacing left the end letters unlit)
+        lx = lx_min + (k + 0.5) * (lx_max - lx_min) / lamps
         top = z + height * 1.3
         beam(f"{name}Goose{k}", (lx, y, top), (lx, y - 0.9, top + 0.15), 0.05, 0.05, M['steel'], S, bevel=0)
         cyl(f"{name}GooseShade{k}", lx, y - 0.95, top + 0.02, top + 0.2, 0.17, 0.1, M['steel'], S, 16)

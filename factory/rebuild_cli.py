@@ -4,6 +4,8 @@ import os
 exec(open(os.path.join(os.path.dirname(bpy.data.filepath), 'run.py')).read())
 f = bpy.app.driver_namespace['factory']
 n = f['build_all'](True)
+tex_up = f['A']['upgrade_model_textures']() if f.get('A') and 'upgrade_model_textures' in f['A'] else None
+print("TEX_UPGRADE", tex_up, sorted(__import__('collections').Counter(max(i.size) for i in bpy.data.images if i.size[0]).items()))
 for nm in ('Vegetation', 'Surroundings'):
     c = bpy.data.collections.get(nm)
     if c:
